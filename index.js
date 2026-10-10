@@ -784,22 +784,24 @@ function positionMenu(menu) {
     // The bar's top edge (the textarea grows upwards as the user types).
     const textarea = getTextarea();
     const inputBarTop = textarea ? textarea.getBoundingClientRect().top : buttonBottom;
-    const minBottom = Math.min(viewportHeight - inputBarTop + MENU_GAP_PX, viewportHeight - MENU_GAP_PX);
-    const limit = menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, minBottom });
+    const limit = menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, inputBarTop });
     menu.style.maxHeight = `${limit.maxHeight}px`;
 
-    // Second guard, applied after the cap: keep the menu's top edge on screen.
-    // `bottom` is measured from the window's bottom edge, so the top edge sits at
-    // `viewportHeight - bottom - height`. Growing `bottom` moves the menu up, so the
-    // top edge goes negative once `bottom > viewportHeight - height`, which renders
-    // the menu above the viewport — it looks like it never opened. A cramped window
-    // (the half-width layout, a short window, a grown textarea) is where that bites.
-    const cappedHeight = menu.offsetHeight;
-    const upperBottom = Math.max(MENU_GAP_PX, viewportHeight - cappedHeight - MENU_GAP_PX);
-    menu.style.bottom = `${Math.min(Math.max(limit.bottom, MENU_GAP_PX), upperBottom)}px`;
+    // Place by `top`, from a rect-derived pixel position, and place it with `left`.
+    //
+    // An earlier version used CSS `bottom`, mixing that with rect coordinates. In a
+    // real browser those disagreed badly: with `bottom: 42px` in a 733px window the
+    // menu rendered at `rect.top = -71`, i.e. off the top of the screen, which is why
+    // it looked like it never opened. Everything the app positions itself uses rect
+    // coordinates, so staying in that one space removes the whole class of mismatch.
+    const height = menu.offsetHeight;
+    const bottomEdge = limit.bottomFromViewportTop;
+    const top = Math.round(Math.min(Math.max(bottomEdge - height, MENU_GAP_PX), Math.max(MENU_GAP_PX, viewportHeight - height - MENU_GAP_PX)));
+    menu.style.removeProperty('bottom');
+    menu.style.top = `${top}px`;
 
     // Centred on the button, but kept inside the window on both sides.
-    const rect = { width: menu.offsetWidth, height: menu.offsetHeight };
+    const rect = { width: menu.offsetWidth, height };
     const maxLeft = Math.max(MENU_GAP_PX, viewportWidth - rect.width - MENU_GAP_PX);
     const centered = anchor.left + anchor.width / 2 - rect.width / 2;
     const left = Math.round(Math.min(Math.max(centered, MENU_GAP_PX), maxLeft));
@@ -817,21 +819,30 @@ function positionMenu(menu) {
 /**
  * Works out how tall the menu may be and where its bottom edge goes.
  *
- * The bottom edge sits a fixed gap above the button, unless that would push the menu
- * up out of the window — on a very short window it drops to just above the input bar
- * instead, which is the lowest position that still leaves the button usable.
+ * Everything here is in viewport coordinates measured from the window's **top** edge,
+ * the same space `getBoundingClientRect()` reports, so the numbers agree with the
+ * measurements they came from.
  *
- * @returns {{ maxHeight: number, bottom: number }} both in CSS pixels
+ * The bottom edge sits a fixed gap above the button, and the height is capped to the
+ * room between the window's top edge and the button — so on a tall window the menu
+ * clears the textarea entirely, and on a shorter one it simply gets shorter and
+ * scrolls.
+ *
+ * @returns {{ maxHeight: number, bottomFromViewportTop: number }} in CSS pixels
  */
-function menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, minBottom }) {
-    const bottomAboveButton = Math.max(viewportHeight - buttonTop + MENU_GAP_PX, MENU_GAP_PX);
-    const bottom = Math.max(bottomAboveButton, Math.min(minBottom, viewportHeight - MIN_MENU_HEIGHT));
-    const availableAbove = viewportHeight - bottom - MENU_GAP_PX;
+function menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, inputBarTop }) {
+    // Lowest the menu's bottom edge may sit: just above the button, but never below the
+    // point where the menu would have to be shorter than the floor.
+    const bottomAboveButton = Math.max(buttonTop - MENU_GAP_PX, MENU_GAP_PX);
+    // Highest it may sit while still clearing the input bar.
+    const bottomAboveBar = Math.min(Math.max(inputBarTop - MENU_GAP_PX, MENU_GAP_PX), viewportHeight - MIN_MENU_HEIGHT);
+    const bottom = Math.max(bottomAboveButton, bottomAboveBar);
+    const availableAbove = bottom - MENU_GAP_PX;
 
     return {
-        bottom: Math.round(bottom),
-        // The floor applies to the *cap*, not to the menu: a menu whose natural
-        // height is smaller than the floor must keep its own height.
+        bottomFromViewportTop: Math.round(bottom),
+        // The floor applies to the *cap*, not to the menu: a menu whose natural height
+        // is smaller than the floor must keep its own height.
         maxHeight: Math.round(Math.min(naturalHeight, Math.max(availableAbove, MIN_MENU_HEIGHT))),
     };
 }
