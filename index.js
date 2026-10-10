@@ -1,5 +1,9 @@
 /**
- * 快捷输入引号 Quick Quote — a one-click 中文双引号 “” button for the chat input bar.
+ * 快捷符号按钮 Quick Symbols — a symbol button for the chat input bar.
+ *
+ * Ships as a one-click 中文双引号 “” button and generalises to any symbol: the menu
+ * offers a list of symbols (`“”`, `「」`, `……`, `——`, …) that the user edits in the
+ * settings panel, and the button inserts whichever one is current.
  *
  * What it does
  * ------------
@@ -1045,7 +1049,7 @@ function createPanel(store) {
     container.innerHTML = `
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>快捷输入引号 Quick Quote</b>
+                <b>快捷符号按钮</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">

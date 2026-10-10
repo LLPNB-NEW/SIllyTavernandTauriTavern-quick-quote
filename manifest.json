@@ -1,13 +1,13 @@
 {
-    "display_name": "快捷输入引号 Quick Quote",
+    "display_name": "快捷符号按钮",
     "loading_order": 95,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "local",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "homePage": "",
     "auto_update": false,
-    "description": "在底部输入栏加入一个“”按钮：一键插入中文双引号，选中文字时自动给它加引号，光标已在一对引号中间时直接跳过右引号。One-click Chinese double quotes in the chat input bar."
+    "description": "在底部输入栏加入一个符号按钮：点一下插入当前符号（默认中文双引号 “”），选中文字时自动套上符号，光标已在空符号中间时跳过右半边。鼠标悬停（手机上点按）弹出菜单，可在设置里增删任意符号，例如 「」 …… ——。"
 }
