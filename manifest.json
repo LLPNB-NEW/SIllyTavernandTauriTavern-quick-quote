@@ -1,0 +1,13 @@
+{
+    "display_name": "快捷输入引号 Quick Quote",
+    "loading_order": 95,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "local",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false,
+    "description": "在底部输入栏加入一个“”按钮：一键插入中文双引号，选中文字时自动给它加引号，光标已在一对引号中间时直接跳过右引号。One-click Chinese double quotes in the chat input bar."
+}

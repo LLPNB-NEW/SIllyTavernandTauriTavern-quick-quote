@@ -1,0 +1,78 @@
+/* 快捷输入引号 Quick Quote — the “” button plus its settings panel.
+   The button is a direct child of #rightSendForm, so the app already gives it the
+   native bottom-bar size, opacity and hover fade via `#rightSendForm > div`.
+   Everything here is limited to the glyph inside that square and to this
+   extension's own settings panel.
+
+   No `order` is set on purpose: #send_but has `order: 2` while its neighbours use
+   `order: 1`, so the default `order: 0` plus the insertion point right before
+   #send_but puts the button in the last slot before the send button. */
+
+#tt_quick_quote_button {
+    /* Overwritten by index.js from the `glyphScale` setting (50% – 150%). */
+    --tt-quick-quote-glyph-scale: 0.82;
+}
+
+#tt_quick_quote_button .tt-quick-quote-glyph {
+    display: block;
+    /* The two quote marks are narrow but tall, so they are scaled down to keep the
+       button square while matching the neighbouring icons. The value is a custom
+       property rather than a literal so the settings panel can resize it live. */
+    font-size: calc(1em * var(--tt-quick-quote-glyph-scale));
+    line-height: 1;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+}
+
+#tt_quick_quote_button:active .tt-quick-quote-glyph {
+    transform: translateY(1px);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Settings panel                                                             */
+/* ------------------------------------------------------------------------- */
+
+#tt_quick_quote_container .tt-quick-quote-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+    flex-wrap: wrap;
+}
+
+#tt_quick_quote_container .tt-quick-quote-label {
+    flex: 0 0 4.5em;
+    opacity: 0.85;
+}
+
+#tt_quick_quote_container .tt-quick-quote-value {
+    min-width: 3.5em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.9;
+}
+
+#tt_quick_quote_container #tt_quick_quote_scale {
+    flex: 1 1 120px;
+    min-width: 100px;
+    margin: 0;
+    accent-color: var(--SmartThemeQuoteColor, #8ab4f8);
+}
+
+#tt_quick_quote_container .tt-quick-quote-pair {
+    flex: 0 0 5em;
+    text-align: center;
+}
+
+#tt_quick_quote_container .tt-quick-quote-shortcut {
+    flex: 1 1 10em;
+    min-width: 8em;
+}
+
+#tt_quick_quote_container .tt-quick-quote-hint {
+    display: block;
+    margin-top: 6px;
+    line-height: 1.5;
+    opacity: 0.75;
+}
