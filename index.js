@@ -787,7 +787,16 @@ function positionMenu(menu) {
     const minBottom = Math.min(viewportHeight - inputBarTop + MENU_GAP_PX, viewportHeight - MENU_GAP_PX);
     const limit = menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, minBottom });
     menu.style.maxHeight = `${limit.maxHeight}px`;
-    menu.style.bottom = `${limit.bottom}px`;
+
+    // Second guard, applied after the cap: keep the menu's top edge on screen.
+    // `bottom` is measured from the window's bottom edge, so the top edge sits at
+    // `viewportHeight - bottom - height`. Growing `bottom` moves the menu up, so the
+    // top edge goes negative once `bottom > viewportHeight - height`, which renders
+    // the menu above the viewport — it looks like it never opened. A cramped window
+    // (the half-width layout, a short window, a grown textarea) is where that bites.
+    const cappedHeight = menu.offsetHeight;
+    const upperBottom = Math.max(MENU_GAP_PX, viewportHeight - cappedHeight - MENU_GAP_PX);
+    menu.style.bottom = `${Math.min(Math.max(limit.bottom, MENU_GAP_PX), upperBottom)}px`;
 
     // Centred on the button, but kept inside the window on both sides.
     const rect = { width: menu.offsetWidth, height: menu.offsetHeight };
@@ -1461,9 +1470,18 @@ function bindPanel(container, store) {
 }
 
 /**
- * Mounts the settings panel into whichever Extensions column already holds the
- * other extensions, so this panel shows up next to them instead of in an empty
- * column (the app ships two columns and fills them by convention).
+ * Mounts the settings panel at the top of the Extensions column that already holds
+ * the other extensions.
+ *
+ * Two things drive the placement:
+ *
+ * - The app ships two columns and fills them by convention, so an empty column would
+ *   leave this panel sitting on its own; the column with the most children is used.
+ * - It goes in **first**, not last. Those columns are `display: flex` with
+ *   `flex-direction: column` and hold every built-in extension, and below 1000px the
+ *   app stacks the two columns full-width — so anything appended to the end lands
+ *   far down the drawer and has to be scrolled to. First position keeps the panel
+ *   reachable at every window size.
  */
 function mountPanel(store) {
     if (document.getElementById(PANEL_ID) || !document.body) {
@@ -1482,9 +1500,9 @@ function mountPanel(store) {
         .sort((a, b) => b.children.length - a.children.length)[0] ?? columns[0];
 
     const panel = createPanel(store);
-    // Appended before binding: the editable quote list is generated from the stored
-    // settings, so it needs the panel to be reachable by id.
-    host.append(panel);
+    // In the document before binding: the editable symbol list is generated from the
+    // stored settings, so it needs the panel to be reachable by id.
+    host.prepend(panel);
     bindPanel(panel, store);
     return true;
 }
