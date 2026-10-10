@@ -67,13 +67,11 @@ const STORAGE_KEY = 'tauritavern.quickQuote';
 const MIN_GLYPH_SCALE = 50;
 const MAX_GLYPH_SCALE = 150;
 
-/** Quote pairs offered by the hover menu, in the order they are shown. */
+/** Symbols offered by the menu by default, in the order they are shown. */
 const DEFAULT_QUOTE_OPTIONS = Object.freeze(['\u201C\u201D', '\u300C\u300D', '\uFF08\uFF09', '\u300A\u300B', '\u3010\u3011', '""', "''"]);
 
-/**
- * Separator for the `quoteOptions` setting. A comma is used because no sensible
- * bracket pair contains one, so the list stays unambiguous to both read and parse.
- */
+/** Of those, the ones that ship as enclosing pairs rather than standalone units. */
+const DEFAULT_PAIR_SYMBOLS = Object.freeze([...DEFAULT_QUOTE_OPTIONS]);
 
 /** Gap between the button and the menu, plus the delays around hover and close. */
 const MENU_GAP_PX = 6;
@@ -105,6 +103,28 @@ const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'];
  */
 const MENU_MODES = Object.freeze(['auto', 'always', 'never']);
 
+/**
+ * What the toggle on each row reads and means.
+ *
+ * The wording describes where the caret ends up rather than naming the concept:
+ * "停在中间" (stops in the middle) versus "跟在后面" (follows after). Those are the
+ * two things a user actually notices, and neither needs explaining.
+ */
+const MODE_LABELS = Object.freeze({
+    PAIR: '停在中间',
+    WHOLE: '跟在后面',
+});
+
+/** Tooltips for the row toggle, phrased as the result the user will see. */
+const MODE_TITLES = Object.freeze({
+    PAIR: '插入后光标停在符号中间：“|” —— 直接打字就在里面，选中文字时会把它包起来。点一下改成跟在后面。',
+    WHOLE: '插入后光标跟在符号后面：……| —— 不会跑到符号中间去。点一下改成停在中间。',
+    SINGLE: '单个字符没法停在中间，只能跟在后面。',
+});
+
+/** A one-character symbol cannot enclose anything, so it is always a unit. */
+const UNPAIRABLE_LENGTH = 1;
+
 const DEFAULT_CONFIG = Object.freeze({
     enabled: true,
     quote: '\u201C\u201D',
@@ -112,6 +132,8 @@ const DEFAULT_CONFIG = Object.freeze({
     wrapSelection: true,
     glyphScale: 82,
     quoteOptions: [...DEFAULT_QUOTE_OPTIONS],
+    /** Symbols inserted as enclosing pairs; everything else is inserted as a unit. */
+    pairSymbols: [...DEFAULT_PAIR_SYMBOLS],
     menuMode: 'auto',
     animations: true,
 });
@@ -158,8 +180,34 @@ function sanitiseConfig(raw) {
         config.menuMode = raw.menuMode;
     }
     config.quoteOptions = parseSymbolOptions(raw.quoteOptions, config.quote);
+    config.pairSymbols = parsePairSymbols(raw.pairSymbols, config.quoteOptions);
 
     return config;
+}
+
+/**
+ * Normalises the set of symbols that are inserted as enclosing pairs.
+ *
+ * A missing value means the settings predate this option, so the shipped brackets
+ * are used — otherwise every existing user would silently lose the enclosing quote
+ * behaviour. Both the string and array forms are accepted so hand-edited settings
+ * files stay easy to write. Entries that are not in the menu, or that are a single
+ * character (which cannot enclose anything), are dropped.
+ */
+function parsePairSymbols(raw, options) {
+    const source = raw === undefined || raw === null
+        ? [...DEFAULT_PAIR_SYMBOLS]
+        : (Array.isArray(raw) ? raw : String(raw).split(','));
+    const pairs = new Set();
+
+    for (const entry of source) {
+        const text = String(entry ?? '').trim();
+        if ([...text].length > UNPAIRABLE_LENGTH && options.includes(text)) {
+            pairs.add(text);
+        }
+    }
+
+    return [...pairs];
 }
 
 /**
@@ -228,20 +276,20 @@ function parseSymbolOptions(raw, current) {
 }
 
 /**
- * Splits a menu symbol into the text inserted before and after the caret.
+ * Resolves how a symbol is inserted into the text and where the caret goes.
  *
- * A symbol of two or more characters is used as-is (`“”`, `「」`, `……`, `——`) and
- * the caret lands in the middle of it, which is what keeps the quote behaviour
- * intact: `“”` becomes `“|”`, so typing right away produces `“text”`. The same rule
- * gives `…|…` for `……` and `……|` for `……` typed as four characters.
+ * A pair (`“”`) is used whole and the caret lands between its halves, so typing
+ * straight away produces `“text”`. A unit (`……`) is used whole and the caret
+ * follows it, so typing continues after it. A single character can only be a unit.
  *
- * A single character cannot be split, so one copy goes in and the caret follows it
- * (`…` → `…|`).
+ * @param {string} symbol
+ * @param {boolean} asPair whether the symbol is configured to enclose
+ * @returns {{ open: string, close: string, paired: boolean }}
  */
-function splitSymbol(symbol) {
+function splitSymbol(symbol, asPair) {
     const characters = [...symbol];
-    if (characters.length === 1) {
-        return { open: characters[0], close: '', paired: false };
+    if (characters.length <= UNPAIRABLE_LENGTH || !asPair) {
+        return { open: symbol, close: '', paired: false };
     }
 
     const middle = Math.ceil(characters.length / 2);
@@ -440,8 +488,9 @@ function editTextarea(textarea, start, end, text, caret) {
  * @returns {boolean} whether the textarea was modified
  */
 function applyQuote(textarea, rememberedStart, rememberedEnd, config) {
-    const { open, close, paired } = splitSymbol(config.quote);
     const symbol = config.quote;
+    const asPair = config.pairSymbols.includes(symbol);
+    const { open, close, paired } = splitSymbol(symbol, asPair);
     const value = textarea.value;
     const length = value.length;
 
@@ -465,9 +514,10 @@ function applyQuote(textarea, rememberedStart, rememberedEnd, config) {
         return editTextarea(textarea, start, end, symbol, start + symbol.length);
     }
 
-    // No selection: insert one copy and park the caret so typing continues inside.
-    if (caretInsideEmptyPair(value, start, end, open, close)) {
-        // Already between two copies: step over the closing one like an editor.
+    // No selection: insert the symbol once, with the caret where typing continues —
+    // between the halves of a pair, after a standalone unit.
+    if (paired && caretInsideEmptyPair(value, start, end, open, close)) {
+        // Already between the halves: step over the closing one like an editor.
         textarea.focus();
         textarea.setSelectionRange(start + open.length, start + open.length);
         return false;
@@ -1125,8 +1175,9 @@ function createPanel(store) {
                 <small class="tt-quick-quote-hint">
                     按钮在发送键左边。点菜单里的一个符号就会插入它，并把它记为按钮的默认符号 ——
                     也就是「符号」那一栏和按钮上显示的那一个。<br>
-                    <b>两个字符以上</b>的符号成对使用：插两份、光标停在中间，和引号一样，直接打字就是
-                    <b>“你好”</b>；<b>单个字符</b>（例如 ……）只插一份，光标跟在其后。<br>
+                    每行中间的按钮管<b>光标插完停哪儿</b>，点一下切换：
+                    <b>停在中间</b>是 <b>“|”</b>（直接打字就在里面，选中文字时会把它包起来）；
+                    <b>跟在后面</b>是 <b>……|</b>（不会跑到符号中间）。<br>
                     <b>按钮大小</b>只影响按钮上的字符，输入栏的按钮方框大小仍由 App 的图标尺寸决定，
                     所以调它不会把输入栏撑变形。
                 </small>
@@ -1174,18 +1225,43 @@ function renderQuoteOptionList(store, list) {
         input.title = '这个符号。改完按回车或点别处生效。';
         input.addEventListener('change', () => {
             const value = input.value.trim();
-            const options = readConfig().quoteOptions;
+            const current = readConfig();
+            const options = current.quoteOptions;
             // An empty or duplicate symbol is rejected by putting the old one back.
             if ([...value].length < 1 || options.some(existing => existing === value && existing !== option)) {
                 input.value = option;
                 return;
             }
             const next = options.map(existing => (existing === option ? value : existing));
-            const keepsCurrent = readConfig().quote !== option;
-            writeConfig({ quoteOptions: next, ...(keepsCurrent ? {} : { quote: value }) });
+            const pairSymbols = current.pairSymbols.map(existing => (existing === option ? value : existing))
+                .filter(existing => [...existing].length > UNPAIRABLE_LENGTH);
+            const keepsCurrent = current.quote !== option;
+            writeConfig({ quoteOptions: next, pairSymbols, ...(keepsCurrent ? {} : { quote: value }) });
             refreshUi(store);
             renderQuoteOptionList(store, list);
         });
+
+        // Where the caret lands after inserting this symbol.
+        const asPair = config.pairSymbols.includes(option);
+        const canPair = [...option].length > UNPAIRABLE_LENGTH;
+        const mode = document.createElement('div');
+        mode.className = 'menu_button tt-quick-quote-mode-option';
+        // Always prefixed with the symbol so the row reads as a sentence about it.
+        mode.textContent = `${option}${asPair ? MODE_LABELS.PAIR : MODE_LABELS.WHOLE}`;
+        mode.title = canPair ? (asPair ? MODE_TITLES.PAIR : MODE_TITLES.WHOLE) : MODE_TITLES.SINGLE;
+        if (canPair) {
+            mode.classList.toggle('active', asPair);
+            mode.addEventListener('click', () => {
+                const current = readConfig();
+                const pairSymbols = asPair
+                    ? current.pairSymbols.filter(existing => existing !== option)
+                    : [...current.pairSymbols, option];
+                writeConfig({ pairSymbols });
+                renderQuoteOptionList(store, list);
+            });
+        } else {
+            mode.classList.add('disabled');
+        }
 
         const active = document.createElement('div');
         active.className = 'menu_button menu_button_icon tt-quick-quote-use-option';
@@ -1205,27 +1281,28 @@ function renderQuoteOptionList(store, list) {
         removeIcon.className = 'fa-solid fa-trash-can';
         remove.append(removeIcon);
         remove.addEventListener('click', () => {
-            const options = readConfig().quoteOptions;
-            const next = options.filter(existing => existing !== option);
+            const current = readConfig();
+            const next = current.quoteOptions.filter(existing => existing !== option);
+            const pairSymbols = current.pairSymbols.filter(existing => existing !== option);
             if (next.length === 0) {
-                // Never leave the menu empty; fall back to the shipped pairs.
-                writeConfig({ quoteOptions: [...DEFAULT_QUOTE_OPTIONS] });
+                // Never leave the menu empty; fall back to the shipped symbols.
+                writeConfig({ quoteOptions: [...DEFAULT_QUOTE_OPTIONS], pairSymbols: [...DEFAULT_PAIR_SYMBOLS] });
             } else {
-                // Removing the pair the button uses moves it to whatever is left.
-                writeConfig({ quoteOptions: next, ...(readConfig().quote === option ? { quote: next[0] } : {}) });
+                // Removing the symbol the button uses moves it to whatever is left.
+                writeConfig({ quoteOptions: next, pairSymbols, ...(current.quote === option ? { quote: next[0] } : {}) });
             }
             refreshUi(store);
             renderQuoteOptionList(store, list);
         });
 
-        row.append(dot, input, active, remove);
+        row.append(dot, input, mode, active, remove);
         list.append(row);
     }
 
     syncQuoteOptionList(list);
 }
 
-/** Moves the "this is the current pair" dot without rebuilding the rows. */
+/** Moves the "this is the current symbol" dot without rebuilding the rows. */
 function syncQuoteOptionList(list) {
     if (!list) {
         return;
@@ -1367,7 +1444,7 @@ function bindPanel(container, store) {
         }
     });
     resetOptions.addEventListener('click', () => {
-        writeConfig({ quoteOptions: [...DEFAULT_QUOTE_OPTIONS] });
+        writeConfig({ quoteOptions: [...DEFAULT_QUOTE_OPTIONS], pairSymbols: [...DEFAULT_PAIR_SYMBOLS] });
         refreshUi(store);
         renderQuoteOptionList(store, optionList);
     });

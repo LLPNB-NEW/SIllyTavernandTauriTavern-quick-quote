@@ -303,6 +303,34 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
     margin: 0;
 }
 
+/* Enclosing pair vs standalone unit: a small text toggle, so both states read as
+   words instead of an icon whose meaning has to be guessed. */
+#tt_quick_quote_container .tt-quick-quote-mode-option {
+    flex: 0 0 auto;
+    min-width: 6.5em;
+    min-height: 2em;
+    margin: 0;
+    padding: 2px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    font-size: 0.9em;
+    opacity: 0.6;
+    white-space: nowrap;
+}
+
+#tt_quick_quote_container .tt-quick-quote-mode-option.active {
+    opacity: 1;
+    border-color: var(--SmartThemeQuoteColor, #8ab4f8);
+    color: var(--SmartThemeQuoteColor, #8ab4f8);
+}
+
+#tt_quick_quote_container .tt-quick-quote-mode-option.disabled {
+    cursor: default;
+    opacity: 0.35;
+}
+
 #tt_quick_quote_container .tt-quick-quote-new-option {
     flex: 1 1 auto;
     min-width: 6em;
