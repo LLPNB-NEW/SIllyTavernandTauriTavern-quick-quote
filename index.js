@@ -52,8 +52,10 @@
 const BUTTON_ID = 'tt_quick_quote_button';
 const MENU_ID = 'tt_quick_quote_menu';
 const PANEL_ID = 'tt_quick_quote_container';
+const OPTION_LIST_ID = 'tt_quick_quote_options';
+const NEW_OPTION_ID = 'tt_quick_quote_new_option';
 const BUTTON_MARKER = 'quickQuoteButton';
-const ACTION_TITLE = '插入中文双引号 “”';
+const ACTION_TITLE = '插入符号（默认中文双引号 “”）';
 const SETTINGS_KEY = 'tauritavernQuickQuote';
 const STORAGE_KEY = 'tauritavern.quickQuote';
 
@@ -68,11 +70,23 @@ const DEFAULT_QUOTE_OPTIONS = Object.freeze(['\u201C\u201D', '\u300C\u300D', '\u
  * Separator for the `quoteOptions` setting. A comma is used because no sensible
  * bracket pair contains one, so the list stays unambiguous to both read and parse.
  */
-const QUOTE_OPTION_SEPARATOR = ',';
 
-/** Gap between the button and the menu, plus the delay before it closes again. */
+/** Gap between the button and the menu, plus the delays around hover and close. */
 const MENU_GAP_PX = 6;
 const MENU_CLOSE_DELAY_MS = 160;
+const HOVER_OPEN_DELAY_MS = 60;
+
+/** Floor for the menu height, so it stays scrollable rather than collapsing. */
+const MIN_MENU_HEIGHT = 44;
+
+/**
+ * Longest menu symbol that can be typed into the panel.
+ *
+ * Nothing here depends on the length: a symbol with two or more characters behaves
+ * as a pair (two copies inserted, caret between them) and a single character is
+ * inserted once. The cap is only there to keep a pasted paragraph out of the menu.
+ */
+const MAX_SYMBOL_LENGTH = 16;
 
 /** Keys that are never a shortcut on their own. */
 const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'CapsLock', 'Dead']);
@@ -95,6 +109,7 @@ const DEFAULT_CONFIG = Object.freeze({
     glyphScale: 82,
     quoteOptions: [...DEFAULT_QUOTE_OPTIONS],
     menuMode: 'auto',
+    animations: true,
 });
 
 // ---------------------------------------------------------------------------
@@ -121,11 +136,15 @@ function sanitiseConfig(raw) {
     if (typeof raw.wrapSelection === 'boolean') {
         config.wrapSelection = raw.wrapSelection;
     }
+    if (typeof raw.animations === 'boolean') {
+        config.animations = raw.animations;
+    }
     if (typeof raw.shortcut === 'string') {
         config.shortcut = raw.shortcut.trim();
     }
-    // A pair needs two characters; a lone quote could not be stepped over.
-    if (typeof raw.quote === 'string' && [...raw.quote].length >= 2) {
+    // A single symbol is allowed (an ellipsis, a bullet, a dash); it simply inserts
+    // one copy instead of opening a pair.
+    if (typeof raw.quote === 'string' && [...raw.quote].length >= 1) {
         config.quote = raw.quote;
     }
     if (Number.isFinite(Number(raw.glyphScale))) {
@@ -134,7 +153,7 @@ function sanitiseConfig(raw) {
     if (MENU_MODES.includes(raw.menuMode)) {
         config.menuMode = raw.menuMode;
     }
-    config.quoteOptions = parseQuoteOptions(raw.quoteOptions, config.quote);
+    config.quoteOptions = parseSymbolOptions(raw.quoteOptions, config.quote);
 
     return config;
 }
@@ -172,18 +191,23 @@ function isTouchDevice() {
 }
 
 /**
- * Accepts either an array of pairs or the comma-separated string the settings
- * panel edits. The currently selected pair always stays in the list, so the menu
- * can never lose the option that the button itself inserts.
+ * Accepts the stored list of menu symbols.
+ *
+ * The array form is what the panel writes and what everything reads. A
+ * comma-separated string is still accepted so that settings files written by an
+ * earlier version keep working; note that a comma cannot then be a symbol itself.
+ *
+ * The currently selected symbol always stays in the list, so the menu can never
+ * lose the entry that the button itself inserts.
  */
-function parseQuoteOptions(raw, current) {
-    const source = Array.isArray(raw) ? raw : String(raw ?? '').split(QUOTE_OPTION_SEPARATOR);
+function parseSymbolOptions(raw, current) {
+    const source = Array.isArray(raw) ? raw : String(raw ?? '').split(',');
     const options = [];
 
     for (const entry of source) {
         const text = String(entry ?? '').trim();
-        // Two characters minimum, and no comma so the list round-trips cleanly.
-        if ([...text].length < 2 || text.includes(QUOTE_OPTION_SEPARATOR) || options.includes(text)) {
+        // One character is a valid menu entry; duplicates are not.
+        if ([...text].length < 1 || options.includes(text)) {
             continue;
         }
         options.push(text);
@@ -197,6 +221,31 @@ function parseQuoteOptions(raw, current) {
     }
 
     return options;
+}
+
+/**
+ * Splits a menu symbol into the text inserted before and after the caret.
+ *
+ * A symbol of two or more characters is used as-is (`“”`, `「」`, `……`, `——`) and
+ * the caret lands in the middle of it, which is what keeps the quote behaviour
+ * intact: `“”` becomes `“|”`, so typing right away produces `“text”`. The same rule
+ * gives `…|…` for `……` and `……|` for `……` typed as four characters.
+ *
+ * A single character cannot be split, so one copy goes in and the caret follows it
+ * (`…` → `…|`).
+ */
+function splitSymbol(symbol) {
+    const characters = [...symbol];
+    if (characters.length === 1) {
+        return { open: characters[0], close: '', paired: false };
+    }
+
+    const middle = Math.ceil(characters.length / 2);
+    return {
+        open: characters.slice(0, middle).join(''),
+        close: characters.slice(middle).join(''),
+        paired: true,
+    };
 }
 
 function clampGlyphScale(value) {
@@ -329,14 +378,20 @@ function clampIndex(index, length) {
 }
 
 /**
- * True when the caret sits between an opening and a closing quote, i.e. inside an
- * empty pair that was just inserted.
+ * True when the caret sits inside an empty occurrence of the symbol, i.e. between
+ * the opening and closing halves that a previous insert left behind.
+ *
+ * The two halves are expected to differ for a typographic pair (`“` / `”`), so the
+ * check compares each half separately rather than requiring one repeated character.
  */
-function caretInsideEmptyQuotePair(value, start, end, open, close) {
-    if (start !== end || start <= 0 || start >= value.length) {
+function caretInsideEmptyPair(value, start, end, open, close) {
+    if (start !== end || open === '') {
         return false;
     }
-    return value[start - 1] === open && value[start] === close;
+    if (start <= 0 || start >= value.length) {
+        return false;
+    }
+    return value.slice(start - open.length, start) === open && value.slice(start, start + close.length) === close;
 }
 
 /**
@@ -372,7 +427,7 @@ function editTextarea(textarea, start, end, text, caret) {
 }
 
 /**
- * Applies the quote action at the caret.
+ * Applies the current menu symbol at the caret.
  *
  * @param {HTMLTextAreaElement} textarea
  * @param {number|null} rememberedStart caret start remembered while blurred
@@ -381,7 +436,8 @@ function editTextarea(textarea, start, end, text, caret) {
  * @returns {boolean} whether the textarea was modified
  */
 function applyQuote(textarea, rememberedStart, rememberedEnd, config) {
-    const [open, close] = [...config.quote];
+    const { open, close, paired } = splitSymbol(config.quote);
+    const symbol = config.quote;
     const value = textarea.value;
     const length = value.length;
 
@@ -395,22 +451,25 @@ function applyQuote(textarea, rememberedStart, rememberedEnd, config) {
     const end = Math.max(rawStart, rawEnd);
     const selected = value.slice(start, end);
 
-    if (selected.length > 0) {
-        // The selection is wrapped; with `wrapSelection` off it is replaced, so
-        // that only a bare pair is inserted at the caret position.
-        const text = config.wrapSelection ? `${open}${selected}${close}` : `${open}${close}`;
-        const caret = end + open.length + close.length;
-        return editTextarea(textarea, start, end, text, caret);
+    if (selected.length > 0 && config.wrapSelection && paired) {
+        // Wrap the selection in the symbol: `说话` -> `“说话”`, `「」` and so on.
+        return editTextarea(textarea, start, end, `${open}${selected}${close}`, end + symbol.length);
     }
 
-    if (caretInsideEmptyQuotePair(value, start, end, open, close)) {
-        // Already between the quotes: step over the closing one like an editor.
+    if (selected.length > 0) {
+        // Replacing: the symbol goes in whole and the caret follows it.
+        return editTextarea(textarea, start, end, symbol, start + symbol.length);
+    }
+
+    // No selection: insert one copy and park the caret so typing continues inside.
+    if (caretInsideEmptyPair(value, start, end, open, close)) {
+        // Already between two copies: step over the closing one like an editor.
         textarea.focus();
-        textarea.setSelectionRange(start + 1, start + 1);
+        textarea.setSelectionRange(start + open.length, start + open.length);
         return false;
     }
 
-    return editTextarea(textarea, start, end, `${open}${close}`, start + open.length);
+    return editTextarea(textarea, start, end, symbol, start + open.length);
 }
 
 /**
@@ -447,6 +506,17 @@ function applyGlyphScale(button, config) {
     button.style.setProperty('--tt-quick-quote-glyph-scale', String(config.glyphScale / 100));
 }
 
+/**
+ * Toggles the open/close animations.
+ *
+ * The flag lives on <html> rather than on the menu, because the menu element is
+ * replaced whenever its contents change — a class on the element would be lost
+ * with it, and the stylesheet would have to be rebuilt.
+ */
+function applyAnimationPreference(config) {
+    document.documentElement?.classList.toggle('tt-quick-quote-no-anim', !config.animations);
+}
+
 function createButton(store, config) {
     const button = document.createElement('div');
     button.id = BUTTON_ID;
@@ -468,21 +538,44 @@ function createButton(store, config) {
 
     // Hovering the button offers the other quote pairs; the main click still
     // inserts the current one, so the quick path stays a single click.
+    //
+    // The open is deferred by a hair: a tap fires `pointerenter` immediately
+    // before `click`, so without the delay the menu would flash open and shut on
+    // every tap. A real hover easily outlasts the delay, so nothing is lost.
+    let hoverOpenTimer = null;
+    const cancelHoverOpen = () => {
+        if (hoverOpenTimer !== null) {
+            clearTimeout(hoverOpenTimer);
+            hoverOpenTimer = null;
+        }
+    };
+
     button.addEventListener('pointerenter', () => {
         if (prefersTapForMenu(readConfig())) {
             return;
         }
         document.getElementById(MENU_ID)?.cancelClose?.();
-        openMenu();
+        cancelHoverOpen();
+        hoverOpenTimer = setTimeout(() => {
+            hoverOpenTimer = null;
+            openMenu();
+        }, HOVER_OPEN_DELAY_MS);
     });
 
     button.addEventListener('pointerleave', () => {
+        cancelHoverOpen();
         if (prefersTapForMenu(readConfig())) {
             return;
         }
         document.getElementById(MENU_ID)?.appendCloseDelay?.();
     });
+
+    // A press means this was a tap or click, not a hover: the click handler owns
+    // the outcome, so drop the pending hover-open.
+    button.addEventListener('pointerdown', cancelHoverOpen);
+
     button.addEventListener('focus', openMenu);
+    button.addEventListener('blur', cancelHoverOpen);
 
     button.addEventListener('click', event => {
         event.preventDefault();
@@ -596,13 +689,22 @@ function isMenuOpen() {
 }
 
 /**
- * Positions the menu just above the button.
+ * Positions the menu just above the button, and never over the input bar.
  *
- * `position: fixed` + `left/top` is deliberate: the input bar sits inside a
- * blurred, clipped container, so an absolutely positioned menu would be cut off
- * by it. The UI Zoom extension's coordinate fix reports `getBoundingClientRect()`
- * back in CSS pixels, which is exactly the unit `left/top` expect, so this stays
+ * `position: fixed` + `left`/`bottom` is deliberate: the input bar sits inside a
+ * blurred, clipped container, so an absolutely positioned menu would be cut off by
+ * it. The UI Zoom extension's coordinate fix reports `getBoundingClientRect()` back
+ * in CSS pixels, which is exactly the unit `left`/`bottom` expect, so this stays
  * correct at any zoom level.
+ *
+ * `bottom` (rather than `top`) is what keeps the menu clear of the send button: the
+ * menu's own bottom edge is pinned a fixed gap above the button, so the menu can
+ * only ever grow *upwards*. Anchoring by `top` instead would let a taller menu —
+ * options wrapping on a narrow window, a larger font, a grown textarea — push its
+ * bottom edge down over the input bar.
+ *
+ * The height is then capped to the space actually available above the button, with
+ * the menu scrolling internally when the list does not fit.
  */
 function positionMenu(menu) {
     const button = document.getElementById(BUTTON_ID);
@@ -610,14 +712,65 @@ function positionMenu(menu) {
         return;
     }
 
+    const viewportWidth = window.innerWidth || 0;
+    const viewportHeight = window.innerHeight || 0;
     const anchor = button.getBoundingClientRect();
-    const rect = menu.getBoundingClientRect();
+
+    // `offsetWidth`/`offsetHeight` are used rather than `getBoundingClientRect()`:
+    // the latter includes the open/close transform, so a menu measured mid-pop
+    // reports a scaled size and the maths lands in the wrong place.
+    menu.style.maxHeight = '';
+    const naturalHeight = menu.offsetHeight;
+
+    // Clamp the anchor into the viewport so a button at the very edge cannot place
+    // the menu at a negative offset.
+    const buttonTop = Math.min(Math.max(anchor.top, 0), viewportHeight);
+    const buttonBottom = Math.min(Math.max(anchor.bottom ?? (anchor.top + anchor.height), 0), viewportHeight);
+
+    // The bar's top edge (the textarea grows upwards as the user types).
+    const textarea = getTextarea();
+    const inputBarTop = textarea ? textarea.getBoundingClientRect().top : buttonBottom;
+    const minBottom = Math.min(viewportHeight - inputBarTop + MENU_GAP_PX, viewportHeight - MENU_GAP_PX);
+    const limit = menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, minBottom });
+    menu.style.maxHeight = `${limit.maxHeight}px`;
+    menu.style.bottom = `${limit.bottom}px`;
 
     // Centred on the button, but kept inside the window on both sides.
-    const maxLeft = Math.max(MENU_GAP_PX, window.innerWidth - rect.width - MENU_GAP_PX);
+    const rect = { width: menu.offsetWidth, height: menu.offsetHeight };
+    const maxLeft = Math.max(MENU_GAP_PX, viewportWidth - rect.width - MENU_GAP_PX);
     const centered = anchor.left + anchor.width / 2 - rect.width / 2;
-    menu.style.left = `${Math.round(Math.min(Math.max(centered, MENU_GAP_PX), maxLeft))}px`;
-    menu.style.top = `${Math.round(anchor.top - rect.height - MENU_GAP_PX)}px`;
+    const left = Math.round(Math.min(Math.max(centered, MENU_GAP_PX), maxLeft));
+    menu.style.left = `${left}px`;
+
+    // Grow out of the button rather than out of the menu's own centre, so the
+    // "pop" reads as coming from the button it belongs to.
+    const buttonCentre = anchor.left + anchor.width / 2;
+    const originPercent = rect.width > 0
+        ? Math.min(100, Math.max(0, ((buttonCentre - left) / rect.width) * 100))
+        : 50;
+    menu.style.setProperty('--tt-quick-quote-origin-x', `${originPercent.toFixed(1)}%`);
+}
+
+/**
+ * Works out how tall the menu may be and where its bottom edge goes.
+ *
+ * The bottom edge sits a fixed gap above the button, unless that would push the menu
+ * up out of the window — on a very short window it drops to just above the input bar
+ * instead, which is the lowest position that still leaves the button usable.
+ *
+ * @returns {{ maxHeight: number, bottom: number }} both in CSS pixels
+ */
+function menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, minBottom }) {
+    const bottomAboveButton = Math.max(viewportHeight - buttonTop + MENU_GAP_PX, MENU_GAP_PX);
+    const bottom = Math.max(bottomAboveButton, Math.min(minBottom, viewportHeight - MIN_MENU_HEIGHT));
+    const availableAbove = viewportHeight - bottom - MENU_GAP_PX;
+
+    return {
+        bottom: Math.round(bottom),
+        // The floor applies to the *cap*, not to the menu: a menu whose natural
+        // height is smaller than the floor must keep its own height.
+        maxHeight: Math.round(Math.min(naturalHeight, Math.max(availableAbove, MIN_MENU_HEIGHT))),
+    };
 }
 
 /**
@@ -667,7 +820,7 @@ function createMenu(store) {
     const menu = document.createElement('div');
     menu.id = MENU_ID;
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '选择引号');
+    menu.setAttribute('aria-label', '选择要插入的符号');
 
     const openTimer = { id: null };
     const cancelClose = () => {
@@ -698,7 +851,7 @@ function createMenu(store) {
         item.dataset.quote = option;
         item.setAttribute('role', 'menuitem');
         item.setAttribute('tabindex', '0');
-        item.title = `插入 ${option}（并把它设为按钮的默认引号）`;
+        item.title = `插入 ${option}（并把它设为按钮的默认符号）`;
         if (option === config.quote) {
             item.classList.add('active');
         }
@@ -709,11 +862,11 @@ function createMenu(store) {
         const label = document.createElement('span');
         label.textContent = option;
         item.append(label);
-        item.addEventListener('click', () => selectQuoteOption(store, option));
+        item.addEventListener('click', () => selectQuoteOption(store, option, item));
         item.addEventListener('keydown', event => {
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                selectQuoteOption(store, option);
+                selectQuoteOption(store, option, item);
             }
         });
 
@@ -729,17 +882,52 @@ function createMenu(store) {
 /**
  * Inserts one menu option and remembers it as the pair the main button uses next
  * time, so the two always agree about what "the" quote is.
+ *
+ * The menu is *not* rebuilt here: the picked element must survive long enough for
+ * its confirmation animation to play, and the only thing that changed is which
+ * option is current — which `markActiveOption` updates in place. The button glyph
+ * and the stored settings are refreshed as usual.
  */
-function selectQuoteOption(store, option) {
+function selectQuoteOption(store, option, sourceElement) {
     writeConfig({ quote: option });
     insertCurrentQuote(store);
-    refreshUi(store);
+    markActiveOption(option);
+    sourceElement?.classList.add('picked');
+    // Only the button and the animation flag are refreshed here; rebuilding the
+    // menu now would throw away the element that is still animating. The menu
+    // rebuilds itself on the next open, because its signature changed.
+    applyAnimationPreference(readConfig());
+    mountButton(store);
 }
 
-/** Inserts the currently configured pair at the caret, then closes the menu. */
+/** Moves the "current pair" highlight without rebuilding the menu. */
+function markActiveOption(option) {
+    const menu = document.getElementById(MENU_ID);
+    if (!menu) {
+        return;
+    }
+
+    for (const item of menu.children) {
+        const isActive = item.dataset.quote === option;
+        item.classList.toggle('active', isActive);
+        if (isActive) {
+            item.setAttribute('aria-current', 'true');
+        } else {
+            item.removeAttribute('aria-current');
+        }
+    }
+}
+
+/**
+ * Inserts the currently configured pair at the caret, then closes the menu.
+ *
+ * The caret is whatever the caller remembered; that memory lives on the button's
+ * store, so a caller without one — the settings panel, which has no caret of its
+ * own — leaves the textarea alone and only closes the menu.
+ */
 function insertCurrentQuote(store) {
     const textarea = getTextarea();
-    if (textarea) {
+    if (textarea && store) {
         store.selection = { start: textarea.selectionStart, end: textarea.selectionEnd };
         applyQuote(textarea, store.selection.start, store.selection.end, readConfig());
     }
@@ -768,10 +956,20 @@ function mountMenu(store) {
     }
 
     document.body.append(createMenu(store));
+    watchMenuAnchor();
     return true;
 }
 
 let windowHandlersInstalled = false;
+let menuAnchorObserver = null;
+
+/** Re-runs the placement maths for an open menu; a no-op while it is closed. */
+function repositionOpenMenu() {
+    const menu = document.getElementById(MENU_ID);
+    if (menu && isMenuOpen()) {
+        positionMenu(menu);
+    }
+}
 
 /** Closes the menu when the window loses focus and keeps it glued to the button. */
 function installWindowHandlers() {
@@ -785,12 +983,7 @@ function installWindowHandlers() {
         menu?.cancelClose?.();
         closeMenu();
     });
-    window.addEventListener('resize', () => {
-        const menu = document.getElementById(MENU_ID);
-        if (menu && isMenuOpen()) {
-            positionMenu(menu);
-        }
-    });
+    window.addEventListener('resize', repositionOpenMenu);
 
     // Touch has no hover, so nothing would otherwise close a menu that was opened
     // by a tap. A tap anywhere else dismisses it. (Deliberately no pointer capture
@@ -808,6 +1001,26 @@ function installWindowHandlers() {
     }, true);
 }
 
+/**
+ * Keeps the menu glued to the button while the layout moves underneath it.
+ *
+ * The position is computed from measured rectangles, so anything that shifts the
+ * input bar — the textarea growing as the user types, a window resize, the app
+ * rearranging its columns — would otherwise leave the menu floating over the
+ * button, which is exactly the bug this guards against.
+ */
+function watchMenuAnchor() {
+    if (menuAnchorObserver || typeof ResizeObserver !== 'function') {
+        return;
+    }
+
+    menuAnchorObserver = new ResizeObserver(repositionOpenMenu);
+    const textarea = getTextarea();
+    if (textarea) {
+        menuAnchorObserver.observe(textarea);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Settings panel (Extensions drawer)
 // ---------------------------------------------------------------------------
@@ -819,6 +1032,7 @@ function installWindowHandlers() {
  * one), so the panel never needs to rebuild the element that holds the listeners.
  */
 function refreshUi(store) {
+    applyAnimationPreference(readConfig());
     mountButton(store);
     refreshMenu(store);
 }
@@ -853,10 +1067,10 @@ function createPanel(store) {
                 </div>
 
                 <div class="tt-quick-quote-row">
-                    <span class="tt-quick-quote-label">引号</span>
+                    <span class="tt-quick-quote-label">符号</span>
                     <input type="text" id="tt_quick_quote_pair" class="text_pole tt-quick-quote-pair"
-                        maxlength="4" value="${escapeAttribute(config.quote)}"
-                        title="插入的引号对，例如 “” 「」 ""。">
+                        maxlength="16" value="${escapeAttribute(config.quote)}"
+                        title="按钮当前插入的符号，例如 “” 「」 …… ——。它就是按钮上显示的那一个。">
                 </div>
 
                 <div class="tt-quick-quote-row">
@@ -869,29 +1083,193 @@ function createPanel(store) {
                 <div class="tt-quick-quote-row">
                     <span class="tt-quick-quote-label">快捷菜单</span>
                     <select id="tt_quick_quote_menu_mode" class="text_pole tt-quick-quote-mode"
-                        title="按钮上方那排引号菜单怎么打开。手机/平板没有悬停，自动模式下改为点一下按钮打开。">
+                        title="按钮上方那排符号菜单怎么打开。手机/平板没有悬停，自动模式下改为点一下按钮打开。">
                         <option value="auto">自动（触屏点按打开，鼠标悬停打开）</option>
                         <option value="always">总是用点按打开</option>
                         <option value="never">只用鼠标悬停，点按直接插入</option>
                     </select>
                 </div>
 
-                <label class="checkbox_label" title="勾选时给选中的文字加引号；取消勾选则只插入一对空引号。">
+                <label class="checkbox_label" title="勾选时给选中的文字套上符号；取消勾选则只插入符号，不包裹选中内容。">
                     <input type="checkbox" id="tt_quick_quote_wrap">
-                    <span>选中文字时给它加引号</span>
+                    <span>选中文字时给它套上符号</span>
                 </label>
 
+                <label class="checkbox_label" title="菜单弹出和收起时带一段缩放淡入动画。取消勾选则瞬间出现／消失。">
+                    <input type="checkbox" id="tt_quick_quote_animations">
+                    <span>菜单弹出动画</span>
+                </label>
+
+                <div class="tt-quick-quote-subhead">菜单里的符号</div>
+                <div class="tt-quick-quote-hint-line">
+                    鼠标停在按钮上（手机上点一下按钮）会弹出这一排。放引号、括号、省略号、破折号都行。
+                </div>
+                <div id="tt_quick_quote_options" class="tt-quick-quote-options"></div>
+                <div class="tt-quick-quote-row">
+                    <input type="text" id="tt_quick_quote_new_option" class="text_pole tt-quick-quote-new-option"
+                        maxlength="16" placeholder="加上一个符号，例如 ……"
+                        title="输入一个符号后按回车，或点右边的「添加」。">
+                    <div id="tt_quick_quote_add_option" class="menu_button menu_button_icon" title="添加到菜单末尾">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>添加</span>
+                    </div>
+                    <div id="tt_quick_quote_reset_options" class="menu_button menu_button_icon" title="恢复成默认的那几个符号">
+                        <i class="fa-solid fa-rotate-left"></i>
+                    </div>
+                </div>
+
                 <small class="tt-quick-quote-hint">
-                    按钮在发送键左边。把鼠标放在按钮上会弹出<b>「」（）《》</b>等引号供选，点哪个就插入哪个，
-                    并把它记为按钮的默认引号；直接点按钮则插入当前引号。<br>
-                    <b>按钮大小</b>只影响“”两个字，输入栏的按钮方框大小仍由 App 的图标尺寸决定，所以调它不会把输入栏撑变形。
+                    按钮在发送键左边。点菜单里的一个符号就会插入它，并把它记为按钮的默认符号 ——
+                    也就是「符号」那一栏和按钮上显示的那一个。<br>
+                    <b>两个字符以上</b>的符号成对使用：插两份、光标停在中间，和引号一样，直接打字就是
+                    <b>“你好”</b>；<b>单个字符</b>（例如 ……）只插一份，光标跟在其后。<br>
+                    <b>按钮大小</b>只影响按钮上的字符，输入栏的按钮方框大小仍由 App 的图标尺寸决定，
+                    所以调它不会把输入栏撑变形。
                 </small>
             </div>
         </div>
     `;
 
-    bindPanel(container, store);
+    // `bindPanel` runs after the panel is in the document, because the editable
+    // quote list is looked up by id.
     return container;
+}
+
+/**
+ * Renders one editable row per quote pair in the menu.
+ *
+ * The list element is passed in rather than looked up by id: the panel is queried
+ * for its own children, which keeps the order of "mount, then bind" out of it.
+ *
+ * Editing happens in place: the inputs are only rebuilt when the set of pairs
+ * changes, so typing in a field is never interrupted by a re-render.
+ */
+function renderQuoteOptionList(store, list) {
+    if (!list) {
+        return;
+    }
+
+    const config = readConfig();
+    list.textContent = '';
+
+    for (const option of config.quoteOptions) {
+        const row = document.createElement('div');
+        row.className = 'tt-quick-quote-option-row';
+        row.dataset.quote = option;
+
+        const dot = document.createElement('span');
+        dot.className = 'tt-quick-quote-active-dot';
+        dot.title = '按钮当前用的就是这个符号';
+        dot.setAttribute('aria-hidden', 'true');
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'text_pole tt-quick-quote-option-input';
+        input.maxLength = MAX_SYMBOL_LENGTH;
+        input.value = option;
+        input.title = '这个符号。改完按回车或点别处生效。';
+        input.addEventListener('change', () => {
+            const value = input.value.trim();
+            const options = readConfig().quoteOptions;
+            // An empty or duplicate symbol is rejected by putting the old one back.
+            if ([...value].length < 1 || options.some(existing => existing === value && existing !== option)) {
+                input.value = option;
+                return;
+            }
+            const next = options.map(existing => (existing === option ? value : existing));
+            const keepsCurrent = readConfig().quote !== option;
+            writeConfig({ quoteOptions: next, ...(keepsCurrent ? {} : { quote: value }) });
+            refreshUi(store);
+            renderQuoteOptionList(store, list);
+        });
+
+        const active = document.createElement('div');
+        active.className = 'menu_button menu_button_icon tt-quick-quote-use-option';
+        active.title = '把这一项设为按钮当前使用的符号';
+        const activeIcon = document.createElement('i');
+        activeIcon.className = 'fa-solid fa-check';
+        active.append(activeIcon);
+        active.addEventListener('click', () => {
+            selectQuoteOption(store, input.value.trim(), null);
+            syncQuoteOptionList(list);
+        });
+
+        const remove = document.createElement('div');
+        remove.className = 'menu_button menu_button_icon tt-quick-quote-remove-option';
+        remove.title = '从菜单里删掉这一项';
+        const removeIcon = document.createElement('i');
+        removeIcon.className = 'fa-solid fa-trash-can';
+        remove.append(removeIcon);
+        remove.addEventListener('click', () => {
+            const options = readConfig().quoteOptions;
+            const next = options.filter(existing => existing !== option);
+            if (next.length === 0) {
+                // Never leave the menu empty; fall back to the shipped pairs.
+                writeConfig({ quoteOptions: [...DEFAULT_QUOTE_OPTIONS] });
+            } else {
+                // Removing the pair the button uses moves it to whatever is left.
+                writeConfig({ quoteOptions: next, ...(readConfig().quote === option ? { quote: next[0] } : {}) });
+            }
+            refreshUi(store);
+            renderQuoteOptionList(store, list);
+        });
+
+        row.append(dot, input, active, remove);
+        list.append(row);
+    }
+
+    syncQuoteOptionList(list);
+}
+
+/** Moves the "this is the current pair" dot without rebuilding the rows. */
+function syncQuoteOptionList(list) {
+    if (!list) {
+        return;
+    }
+
+    const current = readConfig().quote;
+    for (const row of list.children) {
+        row.classList.toggle('active', row.dataset.quote === current);
+    }
+}
+
+/** Appends the pair typed into the "add" field, if it is usable. */
+function addQuoteOption(store, list) {
+    const input = document.getElementById(NEW_OPTION_ID);
+    const value = input?.value.trim() ?? '';
+    const options = readConfig().quoteOptions;
+
+    if ([...value].length < 1 || options.includes(value)) {
+        return;
+    }
+
+    writeConfig({ quoteOptions: [...options, value] });
+    if (input) {
+        input.value = '';
+    }
+    refreshUi(store);
+    renderQuoteOptionList(store, list);
+}
+
+/**
+ * Re-renders the panel's quote list from the stored settings.
+ *
+ * Exported for the self-check harness in `check.mjs`, which drives this module
+ * without a browser: it changes the stored pairs the way editing settings.json
+ * would, then needs the panel to catch up. Nothing in the app calls it — the panel
+ * renders itself when it is bound.
+ */
+export function refreshQuoteOptionList() {
+    renderQuoteOptionList(null, document.getElementById(OPTION_LIST_ID));
+}
+
+/** Renders the panel list when the panel is (re)bound. */
+function mountQuoteOptionList(store, list) {
+    if (!list) {
+        return false;
+    }
+    renderQuoteOptionList(store, list);
+    return true;
 }
 
 function escapeAttribute(value) {
@@ -906,15 +1284,29 @@ function bindPanel(container, store) {
     const pair = container.querySelector('#tt_quick_quote_pair');
     const shortcut = container.querySelector('#tt_quick_quote_shortcut');
     const wrap = container.querySelector('#tt_quick_quote_wrap');
+    const animations = container.querySelector('#tt_quick_quote_animations');
     const menuMode = container.querySelector('#tt_quick_quote_menu_mode');
+    const addOption = container.querySelector('#tt_quick_quote_add_option');
+    const newOption = container.querySelector('#tt_quick_quote_new_option');
+    const resetOptions = container.querySelector('#tt_quick_quote_reset_options');
+    const optionList = container.querySelector('#tt_quick_quote_options');
 
     // Reflect the stored values (the panel markup above is only a first guess).
     const config = readConfig();
     enabled.checked = config.enabled;
     wrap.checked = config.wrapSelection;
+    animations.checked = config.animations;
     scale.value = String(config.glyphScale);
     scaleValue.textContent = `${config.glyphScale}%`;
     menuMode.value = config.menuMode;
+
+    // The list is generated from the stored pairs, so it is not part of the markup.
+    mountQuoteOptionList(store, optionList);
+
+    animations.addEventListener('input', () => {
+        writeConfig({ animations: animations.checked });
+        applyAnimationPreference(readConfig());
+    });
 
     menuMode.addEventListener('change', () => {
         if (!MENU_MODES.includes(menuMode.value)) {
@@ -953,13 +1345,27 @@ function bindPanel(container, store) {
 
     pair.addEventListener('change', () => {
         const value = pair.value.trim();
-        if ([...value].length < 2) {
+        if ([...value].length < 1) {
             // Reject silently by snapping back rather than storing an unusable pair.
             pair.value = readConfig().quote;
             return;
         }
         writeConfig({ quote: value });
         refreshUi(store);
+        syncQuoteOptionList(optionList);
+    });
+
+    addOption.addEventListener('click', () => addQuoteOption(store, optionList));
+    newOption.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            addQuoteOption(store, optionList);
+        }
+    });
+    resetOptions.addEventListener('click', () => {
+        writeConfig({ quoteOptions: [...DEFAULT_QUOTE_OPTIONS] });
+        refreshUi(store);
+        renderQuoteOptionList(store, optionList);
     });
 
     shortcut.addEventListener('change', () => {
@@ -994,7 +1400,11 @@ function mountPanel(store) {
         .filter(column => column.children.length > 0)
         .sort((a, b) => b.children.length - a.children.length)[0] ?? columns[0];
 
-    host.append(createPanel(store));
+    const panel = createPanel(store);
+    // Appended before binding: the editable quote list is generated from the stored
+    // settings, so it needs the panel to be reachable by id.
+    host.append(panel);
+    bindPanel(panel, store);
     return true;
 }
 
@@ -1013,6 +1423,7 @@ function main() {
         }
 
         trackCaret(store);
+        applyAnimationPreference(readConfig());
         mountButton(store);
         mountMenu(store);
         installShortcut(store);
