@@ -30,6 +30,87 @@
 }
 
 /* ------------------------------------------------------------------------- */
+/* Quote picker menu                                                          */
+/* ------------------------------------------------------------------------- */
+
+#tt_quick_quote_menu {
+    /* Fixed positioning keeps the menu out of the input bar's clipped, blurred
+       container; index.js computes left/top from the button's rect. */
+    position: fixed;
+    z-index: 2147483000;
+    display: none;
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.25));
+    border-radius: 8px;
+    background-color: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.85));
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 0px));
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    /* Narrow screens (phones) cannot fit every pair on one line, so the row wraps
+       instead of overflowing and the whole menu scrolls if it still does not fit. */
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100vw - 12px);
+    max-height: 40vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* Shown either while hovered (pure CSS, so it survives the menu moving under the
+   cursor) or while opened by script (keyboard focus, tap, or a refresh). */
+#tt_quick_quote_menu.open,
+#tt_quick_quote_menu:hover {
+    display: flex;
+}
+
+/* An invisible bridge over the gap between the button and the menu, so travelling
+   from one to the other never passes through "neither" and closes the menu. Not
+   needed on touch, where the menu is opened by a tap instead of hover. */
+@media (hover: hover) {
+    #tt_quick_quote_menu::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 100%;
+        height: 8px;
+    }
+}
+
+#tt_quick_quote_menu .tt-quick-quote-option {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: calc(var(--bottomFormIconSize, 1.9em) * 1.5);
+    /* Comfortable touch target on phones. */
+    min-height: 2.2em;
+    padding: 4px 7px;
+    border-radius: 6px;
+    cursor: pointer;
+    opacity: 0.75;
+    white-space: nowrap;
+    transition: opacity var(--animation-duration-2x, 0.2s), background-color var(--animation-duration-2x, 0.2s);
+}
+
+#tt_quick_quote_menu .tt-quick-quote-option:hover {
+    opacity: 1;
+    background-color: var(--white30a, rgba(255, 255, 255, 0.18));
+}
+
+#tt_quick_quote_menu .tt-quick-quote-option.active {
+    opacity: 1;
+    background-color: var(--white30a, rgba(255, 255, 255, 0.14));
+    outline: 1px solid var(--interactable-outline-color, rgba(255, 255, 255, 0.4));
+    outline-offset: -1px;
+}
+
+#tt_quick_quote_menu .tt-quick-quote-option:focus-visible {
+    outline: 1px solid var(--interactable-outline-color, rgba(255, 255, 255, 0.4));
+    outline-offset: -1px;
+}
+
+/* ------------------------------------------------------------------------- */
 /* Settings panel                                                             */
 /* ------------------------------------------------------------------------- */
 
@@ -68,6 +149,11 @@
 #tt_quick_quote_container .tt-quick-quote-shortcut {
     flex: 1 1 10em;
     min-width: 8em;
+}
+
+#tt_quick_quote_container .tt-quick-quote-mode {
+    flex: 1 1 14em;
+    min-width: 12em;
 }
 
 #tt_quick_quote_container .tt-quick-quote-hint {

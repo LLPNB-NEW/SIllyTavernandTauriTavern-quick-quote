@@ -50,6 +50,7 @@
  */
 
 const BUTTON_ID = 'tt_quick_quote_button';
+const MENU_ID = 'tt_quick_quote_menu';
 const PANEL_ID = 'tt_quick_quote_container';
 const BUTTON_MARKER = 'quickQuoteButton';
 const ACTION_TITLE = '插入中文双引号 “”';
@@ -60,9 +61,31 @@ const STORAGE_KEY = 'tauritavern.quickQuote';
 const MIN_GLYPH_SCALE = 50;
 const MAX_GLYPH_SCALE = 150;
 
+/** Quote pairs offered by the hover menu, in the order they are shown. */
+const DEFAULT_QUOTE_OPTIONS = Object.freeze(['\u201C\u201D', '\u300C\u300D', '\uFF08\uFF09', '\u300A\u300B', '\u3010\u3011', '""', "''"]);
+
+/**
+ * Separator for the `quoteOptions` setting. A comma is used because no sensible
+ * bracket pair contains one, so the list stays unambiguous to both read and parse.
+ */
+const QUOTE_OPTION_SEPARATOR = ',';
+
+/** Gap between the button and the menu, plus the delay before it closes again. */
+const MENU_GAP_PX = 6;
+const MENU_CLOSE_DELAY_MS = 160;
+
 /** Keys that are never a shortcut on their own. */
 const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'CapsLock', 'Dead']);
 const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'];
+
+/**
+ * How the button reaches the quote menu.
+ *
+ * AUTO guesses from the device: a touch screen has no hover, so there the button
+ * opens the menu on a tap instead of inserting straight away. The user can pin
+ * either behaviour from the settings panel.
+ */
+const MENU_MODES = Object.freeze(['auto', 'always', 'never']);
 
 const DEFAULT_CONFIG = Object.freeze({
     enabled: true,
@@ -70,6 +93,8 @@ const DEFAULT_CONFIG = Object.freeze({
     shortcut: '',
     wrapSelection: true,
     glyphScale: 82,
+    quoteOptions: [...DEFAULT_QUOTE_OPTIONS],
+    menuMode: 'auto',
 });
 
 // ---------------------------------------------------------------------------
@@ -106,8 +131,72 @@ function sanitiseConfig(raw) {
     if (Number.isFinite(Number(raw.glyphScale))) {
         config.glyphScale = clampGlyphScale(raw.glyphScale);
     }
+    if (MENU_MODES.includes(raw.menuMode)) {
+        config.menuMode = raw.menuMode;
+    }
+    config.quoteOptions = parseQuoteOptions(raw.quoteOptions, config.quote);
 
     return config;
+}
+
+/**
+ * True when the menu should open on a tap rather than on hover.
+ *
+ * `auto` trusts the device: a touch screen cannot hover, so the button has to
+ * offer the menu on its first tap. Touch-capable desktops are included, because
+ * tapping there hits the same problem.
+ */
+function prefersTapForMenu(config) {
+    if (config.menuMode === 'always') {
+        return true;
+    }
+    if (config.menuMode === 'never') {
+        return false;
+    }
+    return isTouchDevice();
+}
+
+function isTouchDevice() {
+    if (typeof navigator === 'undefined') {
+        return false;
+    }
+
+    const userAgent = typeof navigator.userAgent === 'string' ? navigator.userAgent : '';
+    if (/android|iphone|ipad|ipod|mobile/i.test(userAgent)) {
+        return true;
+    }
+    if (Number(navigator.maxTouchPoints || 0) > 0) {
+        return true;
+    }
+    return typeof window !== 'undefined' && Number(window.matchMedia?.('(pointer: coarse)')?.matches) > 0;
+}
+
+/**
+ * Accepts either an array of pairs or the comma-separated string the settings
+ * panel edits. The currently selected pair always stays in the list, so the menu
+ * can never lose the option that the button itself inserts.
+ */
+function parseQuoteOptions(raw, current) {
+    const source = Array.isArray(raw) ? raw : String(raw ?? '').split(QUOTE_OPTION_SEPARATOR);
+    const options = [];
+
+    for (const entry of source) {
+        const text = String(entry ?? '').trim();
+        // Two characters minimum, and no comma so the list round-trips cleanly.
+        if ([...text].length < 2 || text.includes(QUOTE_OPTION_SEPARATOR) || options.includes(text)) {
+            continue;
+        }
+        options.push(text);
+    }
+
+    if (options.length === 0) {
+        return [...DEFAULT_QUOTE_OPTIONS];
+    }
+    if (current && !options.includes(current)) {
+        options.unshift(current);
+    }
+
+    return options;
 }
 
 function clampGlyphScale(value) {
@@ -376,17 +465,57 @@ function createButton(store, config) {
 
     // Keep the focus — and with it the caret — inside the textarea.
     button.addEventListener('mousedown', event => event.preventDefault());
+
+    // Hovering the button offers the other quote pairs; the main click still
+    // inserts the current one, so the quick path stays a single click.
+    button.addEventListener('pointerenter', () => {
+        if (prefersTapForMenu(readConfig())) {
+            return;
+        }
+        document.getElementById(MENU_ID)?.cancelClose?.();
+        openMenu();
+    });
+
+    button.addEventListener('pointerleave', () => {
+        if (prefersTapForMenu(readConfig())) {
+            return;
+        }
+        document.getElementById(MENU_ID)?.appendCloseDelay?.();
+    });
+    button.addEventListener('focus', openMenu);
+
     button.addEventListener('click', event => {
         event.preventDefault();
         const textarea = getTextarea();
         if (!textarea) {
             return;
         }
+
+        // Touch: the first tap opens the menu instead of inserting, and a second
+        // tap inserts the current pair straight away — so a phone user can still
+        // get the default quote with two taps and any other pair with one more.
+        // The flag distinguishes "this tap opened it" from "it was already open",
+        // which matters because a tap also fires `pointerenter`.
+        const config = readConfig();
+        if (prefersTapForMenu(config)) {
+            if (button.dataset.tapOpenedMenu === 'true') {
+                delete button.dataset.tapOpenedMenu;
+            } else {
+                button.dataset.tapOpenedMenu = 'true';
+                openMenu();
+                // Keep this click away from the document-level "tap outside
+                // closes the menu" handler, which would close it immediately.
+                event.stopPropagation();
+                return;
+            }
+        }
+
         // A stray focus change between mousedown and click would move the caret to
         // the end of the text (a blurred textarea collapses its selection), so the
         // live caret is captured here as well; applyQuote prefers it when focused.
         store.selection = { start: textarea.selectionStart, end: textarea.selectionEnd };
         applyQuote(textarea, store.selection.start, store.selection.end, readConfig());
+        closeMenu();
     });
     button.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -459,6 +588,227 @@ function installShortcut(store) {
 }
 
 // ---------------------------------------------------------------------------
+// Quote picker menu
+// ---------------------------------------------------------------------------
+
+function isMenuOpen() {
+    return document.getElementById(MENU_ID)?.classList.contains('open') ?? false;
+}
+
+/**
+ * Positions the menu just above the button.
+ *
+ * `position: fixed` + `left/top` is deliberate: the input bar sits inside a
+ * blurred, clipped container, so an absolutely positioned menu would be cut off
+ * by it. The UI Zoom extension's coordinate fix reports `getBoundingClientRect()`
+ * back in CSS pixels, which is exactly the unit `left/top` expect, so this stays
+ * correct at any zoom level.
+ */
+function positionMenu(menu) {
+    const button = document.getElementById(BUTTON_ID);
+    if (!button) {
+        return;
+    }
+
+    const anchor = button.getBoundingClientRect();
+    const rect = menu.getBoundingClientRect();
+
+    // Centred on the button, but kept inside the window on both sides.
+    const maxLeft = Math.max(MENU_GAP_PX, window.innerWidth - rect.width - MENU_GAP_PX);
+    const centered = anchor.left + anchor.width / 2 - rect.width / 2;
+    menu.style.left = `${Math.round(Math.min(Math.max(centered, MENU_GAP_PX), maxLeft))}px`;
+    menu.style.top = `${Math.round(anchor.top - rect.height - MENU_GAP_PX)}px`;
+}
+
+/**
+ * Signature of everything the menu renders.
+ *
+ * The menu is rebuilt on open when this changes, so the highlighted "current"
+ * pair is always the one the button would insert, no matter which code path or
+ * settings file changed it last.
+ */
+function menuSignature() {
+    const config = readConfig();
+    return `${config.quote}\u0000${config.quoteOptions.join('\u0000')}`;
+}
+
+function openMenu() {
+    const menu = document.getElementById(MENU_ID);
+    if (!menu) {
+        return;
+    }
+
+    // Refresh only when something the menu renders has actually changed; a plain
+    // open is then just a class flip plus a position calculation.
+    if (menu.dataset.signature !== menuSignature()) {
+        refreshMenu(menu.store);
+    }
+
+    const current = document.getElementById(MENU_ID);
+    current?.classList.add('open');
+    positionMenu(current);
+}
+
+function closeMenu() {
+    document.getElementById(MENU_ID)?.classList.remove('open');
+    // Forget that a tap opened the menu: the next tap must open it again rather
+    // than being mistaken for the follow-up tap that inserts.
+    const button = document.getElementById(BUTTON_ID);
+    if (button) {
+        delete button.dataset.tapOpenedMenu;
+    }
+}
+
+/**
+ * Builds the menu row: one button per configured quote pair, with the pair the
+ * main button currently inserts marked as active.
+ */
+function createMenu(store) {
+    const menu = document.createElement('div');
+    menu.id = MENU_ID;
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', '选择引号');
+
+    const openTimer = { id: null };
+    const cancelClose = () => {
+        if (openTimer.id !== null) {
+            clearTimeout(openTimer.id);
+            openTimer.id = null;
+        }
+    };
+    const scheduleClose = () => {
+        cancelClose();
+        openTimer.id = setTimeout(() => {
+            openTimer.id = null;
+            closeMenu();
+        }, MENU_CLOSE_DELAY_MS);
+    };
+
+    menu.appendCloseDelay = scheduleClose;
+    menu.cancelClose = cancelClose;
+    // Kept on the element so a refresh triggered from `openMenu` can rebuild it
+    // without the store having to be threaded through every caller.
+    menu.store = store;
+
+    const config = readConfig();
+    menu.dataset.signature = menuSignature();
+    for (const option of config.quoteOptions) {
+        const item = document.createElement('div');
+        item.className = 'tt-quick-quote-option';
+        item.dataset.quote = option;
+        item.setAttribute('role', 'menuitem');
+        item.setAttribute('tabindex', '0');
+        item.title = `插入 ${option}（并把它设为按钮的默认引号）`;
+        if (option === config.quote) {
+            item.classList.add('active');
+        }
+        if (option === config.quote) {
+            item.setAttribute('aria-current', 'true');
+        }
+
+        const label = document.createElement('span');
+        label.textContent = option;
+        item.append(label);
+        item.addEventListener('click', () => selectQuoteOption(store, option));
+        item.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                selectQuoteOption(store, option);
+            }
+        });
+
+        menu.append(item);
+    }
+
+    // Always interactable, but only visible while the menu is open or hovered.
+    menu.addEventListener('pointerenter', cancelClose);
+    menu.addEventListener('pointerleave', scheduleClose);
+    return menu;
+}
+
+/**
+ * Inserts one menu option and remembers it as the pair the main button uses next
+ * time, so the two always agree about what "the" quote is.
+ */
+function selectQuoteOption(store, option) {
+    writeConfig({ quote: option });
+    insertCurrentQuote(store);
+    refreshUi(store);
+}
+
+/** Inserts the currently configured pair at the caret, then closes the menu. */
+function insertCurrentQuote(store) {
+    const textarea = getTextarea();
+    if (textarea) {
+        store.selection = { start: textarea.selectionStart, end: textarea.selectionEnd };
+        applyQuote(textarea, store.selection.start, store.selection.end, readConfig());
+    }
+    closeMenu();
+}
+
+/** Rebuilds the menu contents, keeping it open (and in place) if it already was. */
+function refreshMenu(store) {
+    const existing = document.getElementById(MENU_ID);
+    if (!existing) {
+        return false;
+    }
+
+    const wasOpen = isMenuOpen();
+    existing.remove();
+    document.body.append(createMenu(store));
+    if (wasOpen) {
+        openMenu();
+    }
+    return true;
+}
+
+function mountMenu(store) {
+    if (document.getElementById(MENU_ID) || !document.body) {
+        return Boolean(document.getElementById(MENU_ID));
+    }
+
+    document.body.append(createMenu(store));
+    return true;
+}
+
+let windowHandlersInstalled = false;
+
+/** Closes the menu when the window loses focus and keeps it glued to the button. */
+function installWindowHandlers() {
+    if (windowHandlersInstalled) {
+        return;
+    }
+    windowHandlersInstalled = true;
+
+    window.addEventListener('blur', () => {
+        const menu = document.getElementById(MENU_ID);
+        menu?.cancelClose?.();
+        closeMenu();
+    });
+    window.addEventListener('resize', () => {
+        const menu = document.getElementById(MENU_ID);
+        if (menu && isMenuOpen()) {
+            positionMenu(menu);
+        }
+    });
+
+    // Touch has no hover, so nothing would otherwise close a menu that was opened
+    // by a tap. A tap anywhere else dismisses it. (Deliberately no pointer capture
+    // on the button: releasing a captured pointer fires `pointerleave`, which would
+    // close the menu the instant the finger lifts.)
+    document.addEventListener('click', event => {
+        if (!isMenuOpen()) {
+            return;
+        }
+        const target = event.target;
+        if (target?.closest?.(`#${MENU_ID}`) || target?.closest?.(`#${BUTTON_ID}`)) {
+            return;
+        }
+        closeMenu();
+    }, true);
+}
+
+// ---------------------------------------------------------------------------
 // Settings panel (Extensions drawer)
 // ---------------------------------------------------------------------------
 
@@ -470,6 +820,7 @@ function installShortcut(store) {
  */
 function refreshUi(store) {
     mountButton(store);
+    refreshMenu(store);
 }
 
 function createPanel(store) {
@@ -515,13 +866,25 @@ function createPanel(store) {
                         title="例如 Ctrl+Alt+Q。需要带修饰键，且只在输入框聚焦时生效。">
                 </div>
 
+                <div class="tt-quick-quote-row">
+                    <span class="tt-quick-quote-label">快捷菜单</span>
+                    <select id="tt_quick_quote_menu_mode" class="text_pole tt-quick-quote-mode"
+                        title="按钮上方那排引号菜单怎么打开。手机/平板没有悬停，自动模式下改为点一下按钮打开。">
+                        <option value="auto">自动（触屏点按打开，鼠标悬停打开）</option>
+                        <option value="always">总是用点按打开</option>
+                        <option value="never">只用鼠标悬停，点按直接插入</option>
+                    </select>
+                </div>
+
                 <label class="checkbox_label" title="勾选时给选中的文字加引号；取消勾选则只插入一对空引号。">
                     <input type="checkbox" id="tt_quick_quote_wrap">
                     <span>选中文字时给它加引号</span>
                 </label>
 
                 <small class="tt-quick-quote-hint">
-                    按钮在发送键左边。<b>按钮大小</b>只影响“”两个字，输入栏的按钮方框大小仍由 App 的图标尺寸决定，所以调它不会把输入栏撑变形。
+                    按钮在发送键左边。把鼠标放在按钮上会弹出<b>「」（）《》</b>等引号供选，点哪个就插入哪个，
+                    并把它记为按钮的默认引号；直接点按钮则插入当前引号。<br>
+                    <b>按钮大小</b>只影响“”两个字，输入栏的按钮方框大小仍由 App 的图标尺寸决定，所以调它不会把输入栏撑变形。
                 </small>
             </div>
         </div>
@@ -543,6 +906,7 @@ function bindPanel(container, store) {
     const pair = container.querySelector('#tt_quick_quote_pair');
     const shortcut = container.querySelector('#tt_quick_quote_shortcut');
     const wrap = container.querySelector('#tt_quick_quote_wrap');
+    const menuMode = container.querySelector('#tt_quick_quote_menu_mode');
 
     // Reflect the stored values (the panel markup above is only a first guess).
     const config = readConfig();
@@ -550,6 +914,16 @@ function bindPanel(container, store) {
     wrap.checked = config.wrapSelection;
     scale.value = String(config.glyphScale);
     scaleValue.textContent = `${config.glyphScale}%`;
+    menuMode.value = config.menuMode;
+
+    menuMode.addEventListener('change', () => {
+        if (!MENU_MODES.includes(menuMode.value)) {
+            menuMode.value = readConfig().menuMode;
+            return;
+        }
+        writeConfig({ menuMode: menuMode.value });
+        refreshUi(store);
+    });
 
     enabled.addEventListener('input', () => {
         writeConfig({ enabled: enabled.checked });
@@ -640,7 +1014,9 @@ function main() {
 
         trackCaret(store);
         mountButton(store);
+        mountMenu(store);
         installShortcut(store);
+        installWindowHandlers();
         panelMounted = mountPanel(store);
         return true;
     };
@@ -656,6 +1032,10 @@ function main() {
         }
         if (started && !document.getElementById(BUTTON_ID)) {
             mountButton(store);
+        }
+        // The menu lives outside the input bar, so it is checked separately.
+        if (started && !document.getElementById(MENU_ID)) {
+            mountMenu(store);
         }
         // The drawer can be rebuilt too, so re-mount the panel if it vanished.
         if (!panelMounted || !document.getElementById(PANEL_ID)) {
