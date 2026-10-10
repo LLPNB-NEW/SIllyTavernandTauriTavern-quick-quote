@@ -743,109 +743,26 @@ function isMenuOpen() {
 }
 
 /**
- * Positions the menu just above the button, and never over the input bar.
+ * Keeps the menu inside the window.
  *
- * `position: fixed` + `left`/`bottom` is deliberate: the input bar sits inside a
- * blurred, clipped container, so an absolutely positioned menu would be cut off by
- * it. The UI Zoom extension's coordinate fix reports `getBoundingClientRect()` back
- * in CSS pixels, which is exactly the unit `left`/`bottom` expect, so this stays
- * correct at any zoom level.
- *
- * `bottom` (rather than `top`) is what keeps the menu clear of the send button: the
- * menu's own bottom edge is pinned a fixed gap above the button, so the menu can
- * only ever grow *upwards*. Anchoring by `top` instead would let a taller menu —
- * options wrapping on a narrow window, a larger font, a grown textarea — push its
- * bottom edge down over the input bar.
- *
- * The height is then capped to the space actually available above the button, with
- * the menu scrolling internally when the list does not fit.
+ * Placement itself is CSS's job (`position: absolute; left: 50%; bottom: calc(100% + 6px)`
+ * against the button's row). The only measurement here guards a very short window: if the
+ * menu's top edge would leave the window, its height is capped so it scrolls instead. The
+ * comparison is against the literal `0`, both sides viewport-relative, so page scaling
+ * cannot distort it — unlike the previous versions, which fed rect values into CSS lengths
+ * and inverted under the UI Zoom extension.
  */
 function positionMenu(menu) {
-    const button = document.getElementById(BUTTON_ID);
-    if (!button) {
-        return;
-    }
-
-    const viewportWidth = window.innerWidth || 0;
-    const viewportHeight = window.innerHeight || 0;
-    const anchor = button.getBoundingClientRect();
-
-    // `offsetWidth`/`offsetHeight` are used rather than `getBoundingClientRect()`:
-    // the latter includes the open/close transform, so a menu measured mid-pop
-    // reports a scaled size and the maths lands in the wrong place.
+    // Two steps, so `getBoundingClientRect()` is never read from a menu that an existing
+    // cap could have shortened.
     menu.style.maxHeight = '';
-    const naturalHeight = menu.offsetHeight;
-
-    // Clamp the anchor into the viewport so a button at the very edge cannot place
-    // the menu at a negative offset.
-    const buttonTop = Math.min(Math.max(anchor.top, 0), viewportHeight);
-    const buttonBottom = Math.min(Math.max(anchor.bottom ?? (anchor.top + anchor.height), 0), viewportHeight);
-
-    // The bar's top edge (the textarea grows upwards as the user types).
-    const textarea = getTextarea();
-    const inputBarTop = textarea ? textarea.getBoundingClientRect().top : buttonBottom;
-    const limit = menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, inputBarTop });
-    menu.style.maxHeight = `${limit.maxHeight}px`;
-
-    // Place by `top`, from a rect-derived pixel position, and place it with `left`.
-    //
-    // An earlier version used CSS `bottom`, mixing that with rect coordinates. In a
-    // real browser those disagreed badly: with `bottom: 42px` in a 733px window the
-    // menu rendered at `rect.top = -71`, i.e. off the top of the screen, which is why
-    // it looked like it never opened. Everything the app positions itself uses rect
-    // coordinates, so staying in that one space removes the whole class of mismatch.
-    const height = menu.offsetHeight;
-    const bottomEdge = limit.bottomFromViewportTop;
-    const top = Math.round(Math.min(Math.max(bottomEdge - height, MENU_GAP_PX), Math.max(MENU_GAP_PX, viewportHeight - height - MENU_GAP_PX)));
-    menu.style.removeProperty('bottom');
-    menu.style.top = `${top}px`;
-
-    // Centred on the button, but kept inside the window on both sides.
-    const rect = { width: menu.offsetWidth, height };
-    const maxLeft = Math.max(MENU_GAP_PX, viewportWidth - rect.width - MENU_GAP_PX);
-    const centered = anchor.left + anchor.width / 2 - rect.width / 2;
-    const left = Math.round(Math.min(Math.max(centered, MENU_GAP_PX), maxLeft));
-    menu.style.left = `${left}px`;
-
-    // Grow out of the button rather than out of the menu's own centre, so the
-    // "pop" reads as coming from the button it belongs to.
-    const buttonCentre = anchor.left + anchor.width / 2;
-    const originPercent = rect.width > 0
-        ? Math.min(100, Math.max(0, ((buttonCentre - left) / rect.width) * 100))
-        : 50;
-    menu.style.setProperty('--tt-quick-quote-origin-x', `${originPercent.toFixed(1)}%`);
+    const overflow = -menu.getBoundingClientRect().top;
+    if (overflow > 0) {
+        const cap = Math.max(menu.offsetHeight - overflow - MENU_GAP_PX, MIN_MENU_HEIGHT);
+        menu.style.maxHeight = `${Math.round(cap)}px`;
+    }
 }
 
-/**
- * Works out how tall the menu may be and where its bottom edge goes.
- *
- * Everything here is in viewport coordinates measured from the window's **top** edge,
- * the same space `getBoundingClientRect()` reports, so the numbers agree with the
- * measurements they came from.
- *
- * The bottom edge sits a fixed gap above the button, and the height is capped to the
- * room between the window's top edge and the button — so on a tall window the menu
- * clears the textarea entirely, and on a shorter one it simply gets shorter and
- * scrolls.
- *
- * @returns {{ maxHeight: number, bottomFromViewportTop: number }} in CSS pixels
- */
-function menuHeightLimit({ viewportHeight, buttonTop, naturalHeight, inputBarTop }) {
-    // Lowest the menu's bottom edge may sit: just above the button, but never below the
-    // point where the menu would have to be shorter than the floor.
-    const bottomAboveButton = Math.max(buttonTop - MENU_GAP_PX, MENU_GAP_PX);
-    // Highest it may sit while still clearing the input bar.
-    const bottomAboveBar = Math.min(Math.max(inputBarTop - MENU_GAP_PX, MENU_GAP_PX), viewportHeight - MIN_MENU_HEIGHT);
-    const bottom = Math.max(bottomAboveButton, bottomAboveBar);
-    const availableAbove = bottom - MENU_GAP_PX;
-
-    return {
-        bottomFromViewportTop: Math.round(bottom),
-        // The floor applies to the *cap*, not to the menu: a menu whose natural height
-        // is smaller than the floor must keep its own height.
-        maxHeight: Math.round(Math.min(naturalHeight, Math.max(availableAbove, MIN_MENU_HEIGHT))),
-    };
-}
 
 /**
  * Signature of everything the menu renders.
@@ -859,22 +776,128 @@ function menuSignature() {
     return `${config.quote}\u0000${config.quoteOptions.join('\u0000')}`;
 }
 
+/**
+ * Shows the menu, rebuilding it first.
+ *
+ * The rebuild is unconditional, and that is deliberate. It used to be skipped whenever a
+ * signature of `quote` + `quoteOptions` was unchanged, on the assumption that the mounted
+ * menu must match those values. It did not: the menu that ended up on screen had been
+ * built while the settings were not readable yet, so it contained no options at all —
+ * just the padding and border, about 36px wide, which looked exactly like a positioning
+ * bug and sent me chasing the layout for a long time. Nothing rebuilt it afterwards
+ * because the signature matched the (correct) current settings, and a comparison against
+ * a signature cannot detect that the element itself is stale.
+ *
+ * Rebuilding eight buttons on each open is cheap, and it makes that whole failure mode
+ * impossible: what is shown is always built from the settings as they are now.
+ */
 function openMenu() {
     const menu = document.getElementById(MENU_ID);
     if (!menu) {
         return;
     }
 
-    // Refresh only when something the menu renders has actually changed; a plain
-    // open is then just a class flip plus a position calculation.
-    if (menu.dataset.signature !== menuSignature()) {
-        refreshMenu(menu.store);
-    }
+    refreshMenu(menu.store);
 
     const current = document.getElementById(MENU_ID);
+
+    // Drop any close the previous menu had already scheduled. Without this the menu
+    // would open and be shut again a moment later by a timer it inherited: the close
+    // delay outlives the hover, and the menu flashed as a thin sliver instead of
+    // appearing. `cancelClose` is stored on the element, so it has to be read from the
+    // element that is actually mounted now.
+    current?.cancelClose?.();
     current?.classList.add('open');
+
+    // The menu's width is deliberately left to CSS.
+    //
+    // Three attempts were made to size it from JavaScript and all three were wrong:
+    // an inline width from `scrollWidth` grew on every open (208 -> 294 -> 337) because
+    // `scrollWidth` reports the overflow before `max-width` has constrained it; setting
+    // it once still made the menu wider than the space it had; and deriving it from the
+    // option count ignored the app's own icon size and zoom.
+    //
+    // CSS is where this belongs, and the app has already solved the hard part: the zoom
+    // extension caps popups with `max-width: calc(100vw / var(--tt-ui-zoom))`, precisely
+    // because CSS `zoom` scales px-based content while the frame stays viewport-sized. Its
+    // own comment records that a long panel "can spill outside the window" otherwise.
+    // This menu is capped the same way in the stylesheet.
+
     positionMenu(current);
+    if (current) {
+        const first = current.children[0];
+        const style = getComputedStyle(current);
+        const sheets = [...(document.styleSheets ?? [])];
+        let hasOurRules = false;
+        let unreachable = 0;
+        for (const sheet of sheets) {
+            try {
+                for (const rule of sheet.cssRules ?? []) {
+                    if (String(rule.selectorText ?? '').includes('tt_quick_quote')) {
+                        hasOurRules = true;
+                    }
+                }
+            } catch {
+                unreachable += 1;
+            }
+        }
+
+        // Every rule whose selector actually matches the menu, with the sizing properties.
+        // A flex container cannot be narrower than its child (44px child, 36px parent
+        // above), so some other rule must be constraining it — this names that rule
+        // instead of guessing at it.
+        const hits = [];
+        for (const sheet of sheets) {
+            let rules;
+            try {
+                rules = sheet.cssRules ?? [];
+            } catch {
+                continue;
+            }
+            for (const rule of rules) {
+                const selector = rule.selectorText;
+                if (!selector || !rule.style) {
+                    continue;
+                }
+                let matches = false;
+                try {
+                    matches = current.matches(selector);
+                } catch {
+                    matches = false;
+                }
+                if (!matches) {
+                    continue;
+                }
+                const sizing = ['width', 'max-width', 'min-width', 'display', 'flex', 'box-sizing', 'zoom', 'contain']
+                    .filter(property => rule.style.getPropertyValue(property))
+                    .map(property => `${property}:${rule.style.getPropertyValue(property)}${rule.style.getPropertyPriority(property) ? '!' : ''}`);
+                if (sizing.length) {
+                    hits.push(`${selector} { ${sizing.join('  ')} }`);
+                }
+            }
+        }
+        for (const hit of hits.slice(0, 12)) {
+        }
+
+        // Direct measurement of the constraint: `offsetWidth` reports 36 while a child
+        // reports 44, which a plain flex container cannot do. These three numbers say
+        // whether the box is being limited by the parent or by its own computed width.
+        const parentBox = current.parentElement?.getBoundingClientRect();
+    }
 }
+
+/**
+ * Whether the pointer is currently on the button or the menu.
+ *
+ * Used to tell a real dismissal apart from a stray event: several handlers fire for
+ * reasons unrelated to the user's intent (a webview `blur`, a close delay that outlives
+ * the hover), and closing on those made the menu flicker shut under the cursor.
+ */
+function pointerHoversMenuOrButton() {
+    const candidates = [document.getElementById(BUTTON_ID), document.getElementById(MENU_ID)];
+    return candidates.some(element => element?.matches?.(':hover'));
+}
+
 
 function closeMenu() {
     document.getElementById(MENU_ID)?.classList.remove('open');
@@ -903,10 +926,20 @@ function createMenu(store) {
             openTimer.id = null;
         }
     };
+    // Closing is decided when the timer fires, not when it is scheduled: the pointer may
+    // have come back to the button or moved onto the menu in the meantime, and closing
+    // then would make the menu flicker shut under the cursor.
+    const pointerIsOnUs = () => {
+        const button = document.getElementById(BUTTON_ID);
+        return [button, menu].some(element => element?.matches?.(':hover'));
+    };
     const scheduleClose = () => {
         cancelClose();
         openTimer.id = setTimeout(() => {
             openTimer.id = null;
+            if (pointerIsOnUs()) {
+                return;
+            }
             closeMenu();
         }, MENU_CLOSE_DELAY_MS);
     };
@@ -1008,6 +1041,37 @@ function insertCurrentQuote(store) {
     closeMenu();
 }
 
+/**
+ * Where the menu lives: inside `#send_form`, the full-width input bar.
+ *
+ * The mount point decides how wide the menu may become, and that took a long time to
+ * notice. It used to live in `#rightSendForm` — the 109px box holding the button — so its
+ * available width *was* 109px: `max-width` can only cap a box, never widen it, so eight
+ * options were compressed to one and the menu rendered as a ~36px sliver no matter how the
+ * width was declared. Measured on the live menu: parent 109px, menu 36px, content 154px.
+ *
+ * `#send_form` spans the whole input bar (`730px` in the same window), so the row has room.
+ * The menu is pinned to that bar's right edge, which is where the button is; anchoring to
+ * the button's own row is what made it impossible.
+ *
+ * The bar must be a positioning context, or `bottom` resolves against the viewport.
+ */
+function getMenuHost() {
+    const host = document.getElementById('send_form')
+        ?? document.getElementById('form_sheld')
+        ?? document.body;
+
+    if (host === document.body) {
+        return host;
+    }
+
+    if (getComputedStyle(host).position === 'static') {
+        host.style.position = 'relative';
+    }
+
+    return host;
+}
+
 /** Rebuilds the menu contents, keeping it open (and in place) if it already was. */
 function refreshMenu(store) {
     const existing = document.getElementById(MENU_ID);
@@ -1017,7 +1081,7 @@ function refreshMenu(store) {
 
     const wasOpen = isMenuOpen();
     existing.remove();
-    document.body.append(createMenu(store));
+    getMenuHost().append(createMenu(store));
     if (wasOpen) {
         openMenu();
     }
@@ -1029,7 +1093,7 @@ function mountMenu(store) {
         return Boolean(document.getElementById(MENU_ID));
     }
 
-    document.body.append(createMenu(store));
+    getMenuHost().append(createMenu(store));
     watchMenuAnchor();
     return true;
 }
@@ -1053,8 +1117,16 @@ function installWindowHandlers() {
     windowHandlersInstalled = true;
 
     window.addEventListener('blur', () => {
-        const menu = document.getElementById(MENU_ID);
-        menu?.cancelClose?.();
+        // Not while the pointer is still on the button or the menu. A desktop webview
+        // fires `blur` for reasons that have nothing to do with this menu — focus moving
+        // between elements, or the window not being active when the pointer arrives — and
+        // closing then made the menu snap shut the instant it opened, which is what the
+        // "shows as a thin sliver" report actually was: three closes were logged for one
+        // hover. Closing on every blur is only safe if the pointer has genuinely left.
+        if (pointerHoversMenuOrButton()) {
+            return;
+        }
+        document.getElementById(MENU_ID)?.cancelClose?.();
         closeMenu();
     });
     window.addEventListener('resize', repositionOpenMenu);

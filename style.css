@@ -34,9 +34,22 @@
 /* ------------------------------------------------------------------------- */
 
 #tt_quick_quote_menu {
-    /* Fixed positioning keeps the menu out of the input bar's clipped, blurred
-       container; index.js computes left/top from the button's rect. */
-    position: fixed;
+    /* Anchored purely in CSS against the full-width input bar (`#send_form`): pinned just
+       above the bar, at its right-hand end, which is where the button sits.
+
+       The mount point matters more than any width declaration. The menu previously lived
+       in `#rightSendForm`, the 109px box holding the button, so its available width was
+       109px — and `max-width` can only cap a box, never widen it, so eight options were
+       squeezed into one and the menu showed as a ~36px sliver however the width was
+       written. Measured live: parent 109px, menu 36px, content 154px.
+
+       For the same reason there is no `width` here and no JavaScript sizing: four
+       different attempts to declare or compute a width all produced a wrong box on this
+       webview. The bar supplies the room; the row simply uses what it needs. */
+    position: absolute;
+    right: 6px;
+    bottom: calc(100% + 6px);
+    /* No `transform`: the horizontal centring belongs to the two state transforms below. */
     z-index: 2147483000;
     /* Kept in the layout at all times (never `display: none`) so that closing can
        be animated too. `visibility: hidden` still takes it out of hit-testing. */
@@ -48,33 +61,42 @@
     background-color: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.85));
     backdrop-filter: blur(var(--SmartThemeBlurStrength, 0px));
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-    /* One row, always. The menu used to wrap, which made its height (and therefore
-       its placement) flip between one and two rows depending on how much room was
-       left — the row count is simply not a good thing to let the layout decide. It
-       now stays a single row and scrolls sideways when the window is too narrow.
+    /* One row, always: a row count that depends on the window would make the height —
+       and therefore the placement — flip around.
 
-       No `max-height` here on purpose either: index.js measures the natural height,
-       caps it to the room available above the button and sets it inline, so a tall
-       menu can never cover the input bar. */
+       Sizing, learned the hard way on a desktop webview at 1.75x UI zoom:
+
+         - `width: max-content` did not resolve to the content's width (computed `35.5px`
+           for `208px` of options), so the menu rendered as a ~36px sliver;
+         - `overflow-x: auto` was worse still: a scroll container is measured at its
+           *minimum* during intrinsic sizing, so the flex row collapsed to one item;
+         - sizing it from JavaScript was wrong in three different ways — the value grew on
+           every open (208 -> 294 -> 337), and it ignored both the app's icon size and zoom.
+
+       What works is leaving the width alone and capping it, which is also what the app's
+       own zoom extension does for every popup: CSS `zoom` scales px-based content while the
+       frame stays viewport-sized, so a wide panel spills out of the window unless it is
+       capped against the zoomed viewport. `100vw / var(--tt-ui-zoom)` is that cap. */
     flex-wrap: nowrap;
     justify-content: flex-start;
-    width: max-content;
-    max-width: calc(100vw - 12px);
+    max-width: calc(100vw / var(--tt-ui-zoom, 1) - 12px);
+    /* The cap above holds the row inside the zoomed viewport; if the options still do not
+       fit, it scrolls rather than spilling off the right edge. */
     overflow-x: auto;
-    overflow-y: hidden;
+    overflow-y: visible;
     overscroll-behavior: contain;
     scrollbar-width: thin;
 
     /* The "pop" is a spring-ish ease: quickly up to size, then a short settle. */
-    --tt-quick-quote-origin-x: 50%;
-    transform-origin: var(--tt-quick-quote-origin-x) 100%;
+    /* Grows out of the right-hand end, where the button sits. */
+    transform-origin: 100% 100%;
     transition:
         opacity 140ms ease-out,
         transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1),
         visibility 0s linear 180ms;
 }
 
-/* Closed state: shrunk towards the button and invisible. Written as the default so
+/* Closed state: shrunk towards the bar and invisible. Written as the default so
    the open state is the plain one.
 
    Visibility is driven only by `.open` and never by CSS `:hover`: on a touch
@@ -99,6 +121,13 @@
 /* Turning the animation off: same states, no transition at all. */
 html.tt-quick-quote-no-anim #tt_quick_quote_menu {
     transition: none;
+}
+
+/* Turning the animation off: same states, minus the pop. The menu is anchored to the right
+   edge of the input bar, so no centring transform has to be preserved here. */
+html.tt-quick-quote-no-anim #tt_quick_quote_menu:not(.open),
+html.tt-quick-quote-no-anim #tt_quick_quote_menu.open {
+    transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -130,8 +159,12 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu {
     align-items: center;
     justify-content: center;
     gap: 4px;
-    min-width: calc(var(--bottomFormIconSize, 1.9em) * 1.5);
-    /* Comfortable touch target on phones. */
+    /* Sized from the app's own bottom-bar icon size rather than a multiple of it. The
+       earlier `* 1.5` made eight options about 390px wide, which does not fit the space a
+       menu actually has once the UI is zoomed (at 1.75x the usable width is only around
+       417 CSS px), so the row ran off the right edge. Matching the icon size keeps the row
+       within reach and lines the options up with the button they belong to. */
+    min-width: var(--bottomFormIconSize, 1.9em);
     min-height: 2.2em;
     padding: 4px 7px;
     border-radius: 6px;
