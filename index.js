@@ -106,19 +106,20 @@ const MENU_MODES = Object.freeze(['auto', 'always', 'never']);
 /**
  * What the toggle on each row reads and means.
  *
- * The wording describes where the caret ends up rather than naming the concept, and it keeps
- * the subject ("光标") because the label is rendered as `symbol + ' ' + label`, so the row
- * reads as one sentence about that symbol: `“” 光标停在符号中间`.
+ * The row has to stay on one line: it holds the "current" dot, the symbol field, this toggle
+ * and two icon buttons, and the dot sits last — if the row wraps, the dot drops onto a line
+ * of its own, which reads as belonging to nothing. So this wording is deliberately short.
  *
- * A bare "停在中间" reads as a fragment in that position — the symbol gives the reader
- * nothing to attach the phrase to. Spelling it out as a full "输入后光标自动在中间" fixes
- * that but makes the button half again as wide, which pushes the row onto a second line in
- * the settings panel. "光标停在符号中间" is the middle ground: a complete phrase that names
- * what stops and where.
+ * The earlier phrases were too clipped to stand alone ("停在中间") and, when spelled out
+ * ("输入后光标自动在中间", "光标停在符号中间"), too wide to fit beside the symbol field:
+ * the toggle is `white-space: nowrap`, so the text was cut off mid-word and the row wrapped
+ * anyway. Two characters name the destination without costing a row.
+ *
+ * The full explanation is in the tooltip, which has room for a sentence.
  */
 const MODE_LABELS = Object.freeze({
-    PAIR: '光标停在符号中间',
-    WHOLE: '光标跟在符号后面',
+    PAIR: '符号内',
+    WHOLE: '符号后',
 });
 
 /** Tooltips for the row toggle, phrased as the result the user will see. */
@@ -1273,9 +1274,11 @@ function createPanel(store) {
                 <small class="tt-quick-quote-hint">
                     按钮在发送键左边。点菜单里的一个符号就会插入它，并把它记为按钮的默认符号 ——
                     也就是「符号」那一栏和按钮上显示的那一个。<br>
-                    每行中间的按钮管<b>光标插完停哪儿</b>，点一下切换：
-                    <b>光标停在符号中间</b>是 <b>“|”</b>（直接打字就在里面，选中文字时会把它包起来）；
-                    <b>光标跟在符号后面</b>是 <b>……|</b>（不会跑到符号中间）。<br>
+                    每行中间那个按钮管<b>光标插完停哪儿</b>，点一下切换（按钮文字短，所以写成
+                    <b>符号内</b>／<b>符号后</b>，鼠标停上去有完整说明）：<br>
+                    <b>符号内</b> = 光标停在符号中间，如 <b>“|”</b> —— 直接打字就在里面，
+                    选中文字时会把它包起来；<br>
+                    <b>符号后</b> = 光标跟在符号后面，如 <b>……|</b> —— 不会跑到符号中间去。<br>
                     <b>按钮大小</b>只影响按钮上的字符，输入栏的按钮方框大小仍由 App 的图标尺寸决定，
                     所以调它不会把输入栏撑变形。
                 </small>

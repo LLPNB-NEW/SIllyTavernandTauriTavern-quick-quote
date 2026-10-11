@@ -303,16 +303,16 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
     display: flex;
     align-items: center;
     gap: 6px;
-    /* The row holds a dot, the symbol field, the caret-mode button and two icon buttons.
-       Nothing in it can shrink (the buttons are `flex: 0 0 auto`, the mode label is
-       `nowrap`), so a longer mode label — the wording grew from four characters to eight —
-       used to push the trailing buttons out of the row. Wrapping keeps them reachable
-       instead of losing them off the right edge. */
-    flex-wrap: wrap;
+    /* One line, always. The "current" dot is the last item; if the row wrapped it dropped
+       onto a line of its own, where it looked like it belonged to nothing. The wording and
+       the field widths below are sized so everything fits instead. */
+    flex-wrap: nowrap;
 }
 
 #tt_quick_quote_container .tt-quick-quote-option-row .tt-quick-quote-option-input {
-    flex: 1 1 auto;
+    /* A symbol is one or two characters, so the field does not need to grow with the panel.
+       Letting it grow was what squeezed the caret toggle until its text was cut off. */
+    flex: 0 1 5em;
     min-width: 4em;
     text-align: center;
 }
