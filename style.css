@@ -303,6 +303,12 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
     display: flex;
     align-items: center;
     gap: 6px;
+    /* The row holds a dot, the symbol field, the caret-mode button and two icon buttons.
+       Nothing in it can shrink (the buttons are `flex: 0 0 auto`, the mode label is
+       `nowrap`), so a longer mode label — the wording grew from four characters to eight —
+       used to push the trailing buttons out of the row. Wrapping keeps them reachable
+       instead of losing them off the right edge. */
+    flex-wrap: wrap;
 }
 
 #tt_quick_quote_container .tt-quick-quote-option-row .tt-quick-quote-option-input {
@@ -340,7 +346,11 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
    words instead of an icon whose meaning has to be guessed. */
 #tt_quick_quote_container .tt-quick-quote-mode-option {
     flex: 0 0 auto;
+    /* Fits the current wording ("光标停在符号中间" with the symbol in front). Kept tight
+       rather than generous: this button and the two icon buttons share one row with the
+       symbol field, and every extra em here squeezes that field. */
     min-width: 6.5em;
+    max-width: 100%;
     min-height: 2em;
     margin: 0;
     padding: 2px 8px;

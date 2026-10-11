@@ -106,13 +106,19 @@ const MENU_MODES = Object.freeze(['auto', 'always', 'never']);
 /**
  * What the toggle on each row reads and means.
  *
- * The wording describes where the caret ends up rather than naming the concept:
- * "停在中间" (stops in the middle) versus "跟在后面" (follows after). Those are the
- * two things a user actually notices, and neither needs explaining.
+ * The wording describes where the caret ends up rather than naming the concept, and it keeps
+ * the subject ("光标") because the label is rendered as `symbol + ' ' + label`, so the row
+ * reads as one sentence about that symbol: `“” 光标停在符号中间`.
+ *
+ * A bare "停在中间" reads as a fragment in that position — the symbol gives the reader
+ * nothing to attach the phrase to. Spelling it out as a full "输入后光标自动在中间" fixes
+ * that but makes the button half again as wide, which pushes the row onto a second line in
+ * the settings panel. "光标停在符号中间" is the middle ground: a complete phrase that names
+ * what stops and where.
  */
 const MODE_LABELS = Object.freeze({
-    PAIR: '停在中间',
-    WHOLE: '跟在后面',
+    PAIR: '光标停在符号中间',
+    WHOLE: '光标跟在符号后面',
 });
 
 /** Tooltips for the row toggle, phrased as the result the user will see. */
@@ -1268,8 +1274,8 @@ function createPanel(store) {
                     按钮在发送键左边。点菜单里的一个符号就会插入它，并把它记为按钮的默认符号 ——
                     也就是「符号」那一栏和按钮上显示的那一个。<br>
                     每行中间的按钮管<b>光标插完停哪儿</b>，点一下切换：
-                    <b>停在中间</b>是 <b>“|”</b>（直接打字就在里面，选中文字时会把它包起来）；
-                    <b>跟在后面</b>是 <b>……|</b>（不会跑到符号中间）。<br>
+                    <b>光标停在符号中间</b>是 <b>“|”</b>（直接打字就在里面，选中文字时会把它包起来）；
+                    <b>光标跟在符号后面</b>是 <b>……|</b>（不会跑到符号中间）。<br>
                     <b>按钮大小</b>只影响按钮上的字符，输入栏的按钮方框大小仍由 App 的图标尺寸决定，
                     所以调它不会把输入栏撑变形。
                 </small>
@@ -1338,8 +1344,10 @@ function renderQuoteOptionList(store, list) {
         const canPair = [...option].length > UNPAIRABLE_LENGTH;
         const mode = document.createElement('div');
         mode.className = 'menu_button tt-quick-quote-mode-option';
-        // Always prefixed with the symbol so the row reads as a sentence about it.
-        mode.textContent = `${option}${asPair ? MODE_LABELS.PAIR : MODE_LABELS.WHOLE}`;
+        // Always prefixed with the symbol so the row reads as one sentence about it. The
+        // space matters: without it the symbol runs straight into the wording
+        // (`“”光标停在符号中间`), which reads as though the symbol were part of the phrase.
+        mode.textContent = `${option} ${asPair ? MODE_LABELS.PAIR : MODE_LABELS.WHOLE}`;
         mode.title = canPair ? (asPair ? MODE_TITLES.PAIR : MODE_TITLES.WHOLE) : MODE_TITLES.SINGLE;
         if (canPair) {
             mode.classList.toggle('active', asPair);
