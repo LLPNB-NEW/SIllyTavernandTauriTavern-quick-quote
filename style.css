@@ -1,3 +1,4 @@
+
 /* 快捷输入引号 Quick Quote — the “” button plus its settings panel.
    The button is a direct child of #rightSendForm, so the app already gives it the
    native bottom-bar size, opacity and hover fade via `#rightSendForm > div`.
@@ -46,10 +47,13 @@
        For the same reason there is no `width` here and no JavaScript sizing: four
        different attempts to declare or compute a width all produced a wrong box on this
        webview. The bar supplies the room; the row simply uses what it needs. */
+    /* The menu is a flex row holding one scrollable strip of symbols plus the caret-mode
+       switch. Only the strip scrolls: a control that can be scrolled out of sight is a
+       control the user cannot find, and with ten symbols the switch was previously pushed
+       to the end of a second line where it read as just another symbol. */
     position: absolute;
     right: 6px;
     bottom: calc(100% + 6px);
-    /* No `transform`: the horizontal centring belongs to the two state transforms below. */
     z-index: 2147483000;
     /* Kept in the layout at all times (never `display: none`) so that closing can
        be animated too. `visibility: hidden` still takes it out of hit-testing. */
@@ -80,12 +84,10 @@
     flex-wrap: nowrap;
     justify-content: flex-start;
     max-width: calc(100vw / var(--tt-ui-zoom, 1) - 12px);
-    /* The cap above holds the row inside the zoomed viewport; if the options still do not
-       fit, it scrolls rather than spilling off the right edge. */
-    overflow-x: auto;
-    overflow-y: visible;
-    overscroll-behavior: contain;
-    scrollbar-width: thin;
+    /* The menu itself must not scroll: the switch is its second child and has to stay
+       visible. The symbols live in `.tt-quick-quote-symbols` below, and that strip is what
+       scrolls when the cap above is reached. */
+    overflow: visible;
 
     /* The "pop" is a spring-ish ease: quickly up to size, then a short settle. */
     /* Grows out of the right-hand end, where the button sits. */
@@ -154,19 +156,43 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu.open {
     }
 }
 
-#tt_quick_quote_menu .tt-quick-quote-option {
+/* The strip of symbols. This is the part that scrolls when there are more symbols than the
+   zoomed viewport can show; the switch beside it never scrolls. */
+#tt_quick_quote_menu .tt-quick-quote-symbols {
     display: flex;
     align-items: center;
+    gap: 2px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+}
+
+#tt_quick_quote_menu .tt-quick-quote-option {
+    display: flex;
+    /* Stacked: the symbol on top, its own caret control underneath. Side by side would double
+       the row's width, and with ten symbols plus a control each it has to fit inside the space
+       a zoomed viewport leaves (about 417 CSS px at 1.75x). */
+    flex-direction: column;
+    align-items: center;
     justify-content: center;
-    gap: 4px;
+    gap: 1px;
     /* Sized from the app's own bottom-bar icon size rather than a multiple of it. The
        earlier `* 1.5` made eight options about 390px wide, which does not fit the space a
-       menu actually has once the UI is zoomed (at 1.75x the usable width is only around
-       417 CSS px), so the row ran off the right edge. Matching the icon size keeps the row
-       within reach and lines the options up with the button they belong to. */
+       menu actually has once the UI is zoomed, so the row ran off the right edge. Matching the
+       icon size keeps the row within reach and lines the options up with the button they
+       belong to. */
     min-width: var(--bottomFormIconSize, 1.9em);
-    min-height: 2.2em;
-    padding: 4px 7px;
+    padding: 3px 5px;
+    /* No `outline` here either: the app puts one on focusable elements, and this option is one.
+       It drew a second box around the whole symbol-plus-control stack, outside the one around the
+       control itself. */
+    outline: none;
+    /* Stated rather than inherited. The hover and active states set a background, so without a
+       transparent default the option could keep a fill from the app's own `div` styling and read
+       as a box around the symbol and its control. */
+    background-color: transparent;
     border-radius: 6px;
     cursor: pointer;
     opacity: 0.75;
@@ -174,16 +200,99 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu.open {
     transition: opacity var(--animation-duration-2x, 0.2s), background-color var(--animation-duration-2x, 0.2s);
 }
 
+/* The symbol itself, on the larger of the two lines. */
+#tt_quick_quote_menu .tt-quick-quote-option-glyph {
+    line-height: 1.25;
+}
+
+/* A symbol's caret control: a small labelled button rather than a bare glyph.
+   The wording and colours went through two rounds of feedback — "hard to press and the colour is
+   hard to read" first, then a request to make the text clearer. So: a real target size, a border
+   so it reads as a button, and two states that differ in shape as well as hue, because a
+   theme-dependent accent colour alone is not reliable.
+
+   Text colours are stated explicitly for both states. Leaving the inactive one to inherit made it
+   as faint as the dimmed symbol beside it, which is what prompted "字体颜色也改改". */
+#tt_quick_quote_menu .tt-quick-quote-option .tt-quick-quote-mode-option {
+    min-width: 2.4em;
+    padding: 1px 5px;
+    /* No border at all inside the popup menu, in any state.
+       A transparent border was not enough: with ten symbols every one of these carried a ring, and
+       the whole row read as a grid of boxes rather than a row of symbols — "改成不移到符号上就不用
+       显示边框", then "我的意思是整个". Removing it outright leaves the states to the background
+       (filled for the chosen one, faint on hover), which is what distinguishes them anyway.
+       `border: 0` rather than a transparent border is safe here because there is no hover border to
+       reserve space for. */
+    border: 0;
+    outline: none;
+    border-radius: 5px;
+    font-size: 0.78em;
+    line-height: 1.6;
+    /* Near-white on purpose: it has to stay legible on any theme background. */
+    color: rgba(255, 255, 255, 0.92);
+    opacity: 1;
+    cursor: pointer;
+    transition: background-color var(--animation-duration-2x, 0.2s), color var(--animation-duration-2x, 0.2s),
+        border-color var(--animation-duration-2x, 0.2s);
+}
+
+/* Hover: an outline ring, no fill.
+   An outline is right here because it does not take part in layout — no width shift as the pointer
+   moves along the row — and it is the one cue that survives inside a menu whose items already use
+   the background tint for their own hover state. Requested as "内外移上去要有一层轮廓". */
+#tt_quick_quote_menu .tt-quick-quote-option .tt-quick-quote-mode-option:hover {
+    outline: 1px solid var(--interactable-outline-color, rgba(255, 255, 255, 0.55));
+    outline-offset: 1px;
+    color: #fff;
+}
+
+/* The same ring on the settings panel's control, so the two behave alike. */
+#tt_quick_quote_container .tt-quick-quote-mode-option:not(.disabled):hover {
+    outline: 1px solid var(--interactable-outline-color, rgba(255, 255, 255, 0.55));
+    outline-offset: 1px;
+}
+
+/* The chosen state.
+   It has been through three forms: a solid accent fill (read as a coloured block in the row), then
+   brighter bold text with an underline (reported as "不要下划线，跟外一样就行了"), and now nothing at
+   all — the two states are deliberately identical, so the row is plain text. The state is not lost:
+   it is in the tooltip and in the settings panel's wording, and the menu is a set of buttons rather
+   than a readout. Kept as an explicit rule, with the property values that make it a no-op, so the
+   intent is legible to whoever reads this next and so a future state change has an obvious home. */
+#tt_quick_quote_menu .tt-quick-quote-option .tt-quick-quote-mode-option.active {
+    color: rgba(255, 255, 255, 0.92);
+    font-weight: 400;
+    text-decoration: none;
+    background-color: transparent;
+    border: 0;
+}
+
+/* A single-character symbol can never sit "inside", so its control is inert — dimmed rather
+   than hidden, because an absent button only raises the question of where it went. */
+#tt_quick_quote_menu .tt-quick-quote-option .tt-quick-quote-mode-option.disabled {
+    opacity: 0.45;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: default;
+    background-color: transparent;
+    border-color: transparent;
+}
+
 #tt_quick_quote_menu .tt-quick-quote-option:hover {
     opacity: 1;
     background-color: var(--white30a, rgba(255, 255, 255, 0.18));
 }
 
+/* The symbol the button currently inserts. No paint at all.
+   This element's background was probed and resolved to an opaque teal
+   (`color(srgb 0.625387 0.76161 0.758514 / 0.95)`) even though the only declaration here is a
+   30%-white variable, and nothing in the installed stylesheet, the other extensions, or the user's
+   custom CSS accounts for that value. Rather than keep chasing where it comes from, the paint is
+   switched off with `!important` so nothing upstream can put it back.
+   The menu is a set of buttons rather than a readout, and a highlight that marks the wrong thing is
+   worse than none. */
 #tt_quick_quote_menu .tt-quick-quote-option.active {
     opacity: 1;
-    background-color: var(--white30a, rgba(255, 255, 255, 0.14));
-    outline: 1px solid var(--interactable-outline-color, rgba(255, 255, 255, 0.4));
-    outline-offset: -1px;
+    background-color: transparent !important;
 }
 
 /* Confirmation that a pair was taken and inserted. */
@@ -217,9 +326,20 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
     }
 }
 
+/* Keyboard focus only.
+   This used to be `:focus-visible { outline: 1px solid … }` on the option itself, and with
+   `outline-offset: -1px` it drew a ring inside the whole box — a frame around "symbol + control"
+   that survived several rounds of me looking for the culprit in the app's stylesheet instead of my
+   own. It now marks the symbol text rather than the whole option, so tabbing still shows where you
+   are without drawing a box around the block. */
 #tt_quick_quote_menu .tt-quick-quote-option:focus-visible {
+    outline: none;
+}
+
+#tt_quick_quote_menu .tt-quick-quote-option:focus-visible .tt-quick-quote-option-glyph {
     outline: 1px solid var(--interactable-outline-color, rgba(255, 255, 255, 0.4));
-    outline-offset: -1px;
+    outline-offset: 2px;
+    border-radius: 3px;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -346,9 +466,9 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
    words instead of an icon whose meaning has to be guessed. */
 #tt_quick_quote_container .tt-quick-quote-mode-option {
     flex: 0 0 auto;
-    /* Fits the current wording ("光标停在符号中间" with the symbol in front). Kept tight
-       rather than generous: this button and the two icon buttons share one row with the
-       symbol field, and every extra em here squeezes that field. */
+    /* Fits the wording ("光标在符号内" with the symbol in front). Kept tight rather than
+       generous: this button and the two icon buttons share one row with the symbol field, and
+       every extra em here squeezes that field. */
     min-width: 6.5em;
     max-width: 100%;
     min-height: 2em;
@@ -359,19 +479,46 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu .tt-quick-quote-option.picked {
     justify-content: center;
     gap: 3px;
     font-size: 0.9em;
-    opacity: 0.6;
     white-space: nowrap;
+    /* Text colour is stated, not inherited, and the dimming `opacity: 0.6` is gone: both states
+       are meant to be read. Reported as "the font colour is a bit hard to make out" — at 60%
+       opacity the inactive button looked disabled rather than merely unselected. */
+    color: rgba(255, 255, 255, 0.9);
+    /* This control carries the app's `menu_button` class, and that class paints a background and
+       a border of its own:
+           .menu_button { background-color: var(--SmartThemeBlurTintColor);
+                          border: 1px solid var(--SmartThemeBorderColor);
+                          filter: grayscale(0.5); }
+       Making only my border transparent was not enough — the app's background still drew a box
+       around every one of these, which is the "border" that would not go away. All three have to
+       be taken over here. A transparent border rather than none, so the box keeps its size and
+       nothing shifts when the pointer arrives. */
+    border: 1px solid transparent;
+    background-color: transparent;
+    filter: none;
+    /* Same reason as the popup menu's control: the app's focus outline would draw a box around
+       every one of these. */
+    outline: none;
 }
 
+/* The chosen state, matching the popup menu's control: no emphasis at all, so the two read the
+   same. See the note on the menu's rule — the state is in the tooltip and in this panel's own
+   wording ("光标在符号内" / "光标在符号外"), not in the styling. */
 #tt_quick_quote_container .tt-quick-quote-mode-option.active {
-    opacity: 1;
-    border-color: var(--SmartThemeQuoteColor, #8ab4f8);
-    color: var(--SmartThemeQuoteColor, #8ab4f8);
+    color: rgba(255, 255, 255, 0.9);
+    font-weight: 400;
+    text-decoration: none;
+    border-color: transparent;
+    background-color: transparent;
 }
 
 #tt_quick_quote_container .tt-quick-quote-mode-option.disabled {
     cursor: default;
-    opacity: 0.35;
+    /* Still legible: a single-character symbol cannot enclose, and the reason is in its tooltip,
+       so the button should look unavailable rather than broken. */
+    color: rgba(255, 255, 255, 0.55);
+    border-color: transparent;
+    background-color: transparent;
 }
 
 #tt_quick_quote_container .tt-quick-quote-new-option {

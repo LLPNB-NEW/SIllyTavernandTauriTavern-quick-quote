@@ -54,6 +54,14 @@
  */
 
 const BUTTON_ID = 'tt_quick_quote_button';
+/**
+ * The shared caret/selection store, kept at module scope.
+ *
+ * It is normally threaded through callers, but openMenu needs it to rebuild the menu when the
+ * element has gone missing, and that path has no caller to take it from.
+ */
+let extensionStore = null;
+
 const MENU_ID = 'tt_quick_quote_menu';
 const PANEL_ID = 'tt_quick_quote_container';
 const OPTION_LIST_ID = 'tt_quick_quote_options';
@@ -118,14 +126,27 @@ const MENU_MODES = Object.freeze(['auto', 'always', 'never']);
  * The full explanation is in the tooltip, which has room for a sentence.
  */
 const MODE_LABELS = Object.freeze({
-    PAIR: '符号内',
-    WHOLE: '符号后',
+    PAIR: '光标在符号内',
+    WHOLE: '光标在符号外',
+});
+
+/**
+ * The one-character forms of the same two states, for the popup menu's narrow row.
+ *
+ * "内" and "外" rather than "内" and "后": the two buttons answer one question — is the caret put
+ * inside the symbol or outside it — and naming the second state with an unrelated word made them
+ * look like answers to different questions. Kept here so the labelling used at build time and the
+ * wording in the tooltips cannot drift apart.
+ */
+const MODE_SHORT_LABELS = Object.freeze({
+    PAIR: '内',
+    WHOLE: '外',
 });
 
 /** Tooltips for the row toggle, phrased as the result the user will see. */
 const MODE_TITLES = Object.freeze({
-    PAIR: '插入后光标停在符号中间：“|” —— 直接打字就在里面，选中文字时会把它包起来。点一下改成跟在后面。',
-    WHOLE: '插入后光标跟在符号后面：……| —— 不会跑到符号中间去。点一下改成停在中间。',
+    PAIR: '插入后光标停在符号中间：“|” —— 直接打字就在里面，选中文字时会把它包起来。点一下改成「符号外」。',
+    WHOLE: '插入后光标跟在符号后面：……| —— 不会跑到符号中间去。点一下改成「符号内」。',
     SINGLE: '单个字符没法停在中间，只能跟在后面。',
 });
 
@@ -833,6 +854,14 @@ function menuSignature() {
  * impossible: what is shown is always built from the settings as they are now.
  */
 function openMenu() {
+    // Rebuild the menu if it is not mounted, rather than giving up. Anything that removes the
+    // element — another extension tidying the DOM, or a rebuild that failed halfway — used to
+    // leave the button permanently unable to open anything until the page was reloaded, since
+    // every later open took this same early return.
+    if (!document.getElementById(MENU_ID)) {
+        mountMenu(extensionStore ?? { selection: null });
+    }
+
     const menu = document.getElementById(MENU_ID);
     if (!menu) {
         return;
@@ -865,66 +894,6 @@ function openMenu() {
     // This menu is capped the same way in the stylesheet.
 
     positionMenu(current);
-    if (current) {
-        const first = current.children[0];
-        const style = getComputedStyle(current);
-        const sheets = [...(document.styleSheets ?? [])];
-        let hasOurRules = false;
-        let unreachable = 0;
-        for (const sheet of sheets) {
-            try {
-                for (const rule of sheet.cssRules ?? []) {
-                    if (String(rule.selectorText ?? '').includes('tt_quick_quote')) {
-                        hasOurRules = true;
-                    }
-                }
-            } catch {
-                unreachable += 1;
-            }
-        }
-
-        // Every rule whose selector actually matches the menu, with the sizing properties.
-        // A flex container cannot be narrower than its child (44px child, 36px parent
-        // above), so some other rule must be constraining it — this names that rule
-        // instead of guessing at it.
-        const hits = [];
-        for (const sheet of sheets) {
-            let rules;
-            try {
-                rules = sheet.cssRules ?? [];
-            } catch {
-                continue;
-            }
-            for (const rule of rules) {
-                const selector = rule.selectorText;
-                if (!selector || !rule.style) {
-                    continue;
-                }
-                let matches = false;
-                try {
-                    matches = current.matches(selector);
-                } catch {
-                    matches = false;
-                }
-                if (!matches) {
-                    continue;
-                }
-                const sizing = ['width', 'max-width', 'min-width', 'display', 'flex', 'box-sizing', 'zoom', 'contain']
-                    .filter(property => rule.style.getPropertyValue(property))
-                    .map(property => `${property}:${rule.style.getPropertyValue(property)}${rule.style.getPropertyPriority(property) ? '!' : ''}`);
-                if (sizing.length) {
-                    hits.push(`${selector} { ${sizing.join('  ')} }`);
-                }
-            }
-        }
-        for (const hit of hits.slice(0, 12)) {
-        }
-
-        // Direct measurement of the constraint: `offsetWidth` reports 36 while a child
-        // reports 44, which a plain flex container cannot do. These three numbers say
-        // whether the box is being limited by the parent or by its own computed width.
-        const parentBox = current.parentElement?.getBoundingClientRect();
-    }
 }
 
 /**
@@ -993,6 +962,12 @@ function createMenu(store) {
 
     const config = readConfig();
     menu.dataset.signature = menuSignature();
+    // The symbols live in their own strip so it can scroll on its own, leaving the
+    // caret-mode switch beside it always visible. See `.tt-quick-quote-symbols` in the
+    // stylesheet: a switch that can be scrolled out of sight is one the user cannot find.
+    const symbols = document.createElement('div');
+    symbols.className = 'tt-quick-quote-symbols';
+
     for (const option of config.quoteOptions) {
         const item = document.createElement('div');
         item.className = 'tt-quick-quote-option';
@@ -1008,9 +983,23 @@ function createMenu(store) {
         }
 
         const label = document.createElement('span');
+        label.className = 'tt-quick-quote-option-glyph';
         label.textContent = option;
         item.append(label);
-        item.addEventListener('click', () => selectQuoteOption(store, option, item));
+
+        // Every symbol carries its own caret control, so the mode is set where the symbol is
+        // chosen instead of in one place for all of them. Clicking it records where the caret
+        // should sit for this symbol and inserts nothing. The control repaints the settings
+        // panel itself, so the two views of this setting stay in step — see createModeControl.
+        item.append(createModeControl(option));
+
+        item.addEventListener('click', event => {
+            // A click on the mode control belongs to that control, not to "insert this symbol".
+            if (event.target?.closest?.('.tt-quick-quote-mode-option')) {
+                return;
+            }
+            selectQuoteOption(store, option, item);
+        });
         item.addEventListener('keydown', event => {
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
@@ -1018,8 +1007,10 @@ function createMenu(store) {
             }
         });
 
-        menu.append(item);
+        symbols.append(item);
     }
+
+    menu.append(symbols);
 
     // Always interactable, but only visible while the menu is open or hovered.
     // Both families, for the same reason as the button: this webview delivers mouse events
@@ -1052,14 +1043,107 @@ function selectQuoteOption(store, option, sourceElement) {
     mountButton(store);
 }
 
+/**
+ * Builds the small "inside / after" control used for a symbol, in both the popup menu and the
+ * settings panel.
+ *
+ * One builder for both places on purpose: they write the same setting, so a divergence between
+ * two hand-written copies would show up as the two disagreeing about the same symbol.
+ *
+ * The label is the two-character form ("内"/"后") because the control has to sit inside a row
+ * that is already tight; the tooltip carries the sentence. A single-character symbol cannot
+ * enclose anything, so it gets a disabled control with the reason in its tooltip rather than no
+ * control at all — an absent button invites the question of where it went.
+ *
+ * @param {string} option the symbol this control belongs to
+ * @param {{ label?: (inside: boolean) => string, extraClass?: string }} [options]
+ *        `label` lets the settings panel use the long wording where it has room; the popup
+ *        menu keeps the two-character form its narrow row requires.
+ */
+function createModeControl(option, options = {}) {
+    const { label: labelOf, extraClass = '' } = options;
+    const canPair = [...option].length > UNPAIRABLE_LENGTH;
+    const asPair = canPair && readConfig().pairSymbols.includes(option);
+    const shortLabel = inside => (inside ? MODE_SHORT_LABELS.PAIR : MODE_SHORT_LABELS.WHOLE);
+    const label = labelOf ?? shortLabel;
+
+    const control = document.createElement('div');
+    control.className = `tt-quick-quote-mode-option${extraClass ? ' ' + extraClass : ''}`;
+    control.dataset.quote = option;
+    control.textContent = label(asPair);
+    control.title = canPair
+        ? (asPair ? MODE_TITLES.PAIR : MODE_TITLES.WHOLE)
+        : MODE_TITLES.SINGLE;
+    control.setAttribute('role', 'button');
+    control.setAttribute('aria-label', `${option} 的光标位置`);
+    control.classList.toggle('active', asPair);
+
+    if (!canPair) {
+        control.classList.add('disabled');
+        control.setAttribute('aria-disabled', 'true');
+        return control;
+    }
+
+    const flip = () => {
+        const current = readConfig();
+        const nowPair = current.pairSymbols.includes(option);
+        const pairSymbols = nowPair
+            ? current.pairSymbols.filter(existing => existing !== option)
+            : [...current.pairSymbols, option];
+        writeConfig({ pairSymbols });
+
+        // Updated in place: a rebuild would remove the element the user just clicked, which
+        // also closed the menu when this control lived there. Only this control's label and
+        // state follow the change, so nothing needs rebuilding.
+        const inside = readConfig().pairSymbols.includes(option);
+        control.textContent = label(inside);
+        control.classList.toggle('active', inside);
+        control.title = inside ? MODE_TITLES.PAIR : MODE_TITLES.WHOLE;
+
+        // Keep the menu up if this was the menu's copy: the user is watching the change take
+        // effect, and dismissing the menu under the cursor is never the wanted outcome.
+        const menu = document.getElementById(MENU_ID);
+        if (menu) {
+            menu.cancelClose?.();
+            menu.classList.add('open');
+        }
+
+        // Repaint the settings panel after every change, wherever it was made from. Doing it
+        // here rather than through a per-caller callback is what keeps the two views of this
+        // setting in step: a change made in the popup menu repaints the panel, and a change
+        // made in the panel repaints it too, with no risk of the panel's own handler being
+        // re-bound on a rebuild. The list is repainted, not the menu, so the element the user
+        // just clicked survives.
+        repaintPanelList();
+    };
+
+    control.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        flip();
+    });
+    control.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            flip();
+        }
+    });
+
+    return control;
+}
+
 /** Moves the "current pair" highlight without rebuilding the menu. */
 function markActiveOption(option) {
     const menu = document.getElementById(MENU_ID);
-    if (!menu) {
+    const strip = menu?.querySelector('.tt-quick-quote-symbols');
+    if (!strip) {
         return;
     }
 
-    for (const item of menu.children) {
+    // The symbols live in a strip rather than directly under the menu, so that the strip can
+    // scroll while the caret-mode switch beside it stays put. Iterating the menu's own
+    // children here silently stopped moving the highlight when that changed.
+    for (const item of strip.children) {
         const isActive = item.dataset.quote === option;
         item.classList.toggle('active', isActive);
         if (isActive) {
@@ -1134,6 +1218,7 @@ function refreshMenu(store) {
 }
 
 function mountMenu(store) {
+    extensionStore = store ?? extensionStore;
     if (document.getElementById(MENU_ID) || !document.body) {
         return Boolean(document.getElementById(MENU_ID));
     }
@@ -1317,6 +1402,9 @@ function createPanel(store) {
                     <b>符号内</b> = 光标停在符号中间，如 <b>“|”</b> —— 直接打字就在里面，
                     选中文字时会把它包起来；<br>
                     <b>符号后</b> = 光标跟在符号后面，如 <b>……|</b> —— 不会跑到符号中间去。<br>
+                    弹出菜单最右边也有一个同样的开关，一次改<b>全部</b>符号，省得逐个点。
+                    两者改的是同一项设置，<b>谁后点谁生效</b>：想整体设一遍就点菜单里那个，
+                    之后在这里单独微调某几个，微调不会被覆盖。<br>
                     <b>按钮大小</b>只影响按钮上的字符，输入栏的按钮方框大小仍由 App 的图标尺寸决定，
                     所以调它不会把输入栏撑变形。
                 </small>
@@ -1338,10 +1426,31 @@ function createPanel(store) {
  * Editing happens in place: the inputs are only rebuilt when the set of pairs
  * changes, so typing in a field is never interrupted by a re-render.
  */
+/**
+ * The settings panel's symbol list and the store it renders from, remembered at module scope.
+ *
+ * The panel builds its list once. Without this, a change made from the popup menu — which has
+ * its own controls for the same setting — was written to the settings but never repainted the
+ * panel, so the two disagreed on screen until the panel was rebuilt. A reference is kept rather
+ * than a callback so the menu does not have to be handed panel internals.
+ */
+let panelList = null;
+let panelStore = null;
+
+/** Repaints the settings panel list, if it has been built. */
+function repaintPanelList() {
+    if (panelList && panelStore) {
+        renderQuoteOptionList(panelStore, panelList);
+    }
+}
+
 function renderQuoteOptionList(store, list) {
     if (!list) {
         return;
     }
+
+    panelList = list;
+    panelStore = store ?? panelStore;
 
     const config = readConfig();
     list.textContent = '';
@@ -1380,29 +1489,15 @@ function renderQuoteOptionList(store, list) {
             renderQuoteOptionList(store, list);
         });
 
-        // Where the caret lands after inserting this symbol.
-        const asPair = config.pairSymbols.includes(option);
-        const canPair = [...option].length > UNPAIRABLE_LENGTH;
-        const mode = document.createElement('div');
-        mode.className = 'menu_button tt-quick-quote-mode-option';
-        // Always prefixed with the symbol so the row reads as one sentence about it. The
-        // space matters: without it the symbol runs straight into the wording
-        // (`“”光标停在符号中间`), which reads as though the symbol were part of the phrase.
-        mode.textContent = `${option} ${asPair ? MODE_LABELS.PAIR : MODE_LABELS.WHOLE}`;
-        mode.title = canPair ? (asPair ? MODE_TITLES.PAIR : MODE_TITLES.WHOLE) : MODE_TITLES.SINGLE;
-        if (canPair) {
-            mode.classList.toggle('active', asPair);
-            mode.addEventListener('click', () => {
-                const current = readConfig();
-                const pairSymbols = asPair
-                    ? current.pairSymbols.filter(existing => existing !== option)
-                    : [...current.pairSymbols, option];
-                writeConfig({ pairSymbols });
-                renderQuoteOptionList(store, list);
-            });
-        } else {
-            mode.classList.add('disabled');
-        }
+        // Where the caret lands after inserting this symbol. Built by the same function the
+        // popup menu uses, so the two can never disagree about a given symbol; only the label
+        // differs, because the panel has room for the wording. The repaint after a change is
+        // handled inside that function, so it is not re-bound here.
+        const mode = createModeControl(option, {
+            extraClass: 'menu_button',
+            label: inside => `${option} ${inside ? MODE_LABELS.PAIR : MODE_LABELS.WHOLE}`,
+        });
+        mode.setAttribute('aria-label', `${option} 的光标位置`);
 
         const active = document.createElement('div');
         active.className = 'menu_button menu_button_icon tt-quick-quote-use-option';
@@ -1645,6 +1740,9 @@ function mountPanel(store) {
 
 function main() {
     const store = { selection: null };
+    // Kept at module scope as well, so `openMenu` can rebuild the menu if the element ever
+    // goes missing. Everything else threads the store through its callers.
+    extensionStore = store;
     let panelMounted = false;
 
     const start = () => {
