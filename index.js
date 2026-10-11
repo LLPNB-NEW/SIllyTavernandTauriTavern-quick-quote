@@ -234,19 +234,39 @@ function prefersTapForMenu(config) {
     return isTouchDevice();
 }
 
+/**
+ * Whether this device should open the menu by tap instead of by hover.
+ *
+ * The primary input is what matters, so `(hover: hover)` decides whenever the browser
+ * supports that query. It is the one signal that describes the input actually in use rather
+ * than the hardware's capabilities.
+ *
+ * `maxTouchPoints` deliberately does **not** veto hover any more. A plain desktop reported ten
+ * touch points while the user was working with a mouse — whether from a touchscreen monitor,
+ * a pen digitiser or a driver, the point is the same: a machine can report touch support and
+ * still be driven entirely by mouse. Treating that as "this is a touch device" switched hover
+ * off completely. Measured on the machine that reported the bug: `maxTouchPoints = 10`,
+ * `(pointer: coarse) = false`, `(hover: hover) = true`, and hovering the button did nothing
+ * because the handler returned early. Reporting touch support is not the same as being used
+ * by touch.
+ */
 function isTouchDevice() {
     if (typeof navigator === 'undefined') {
         return false;
     }
 
+    // Authoritative when available: does the *primary* pointer support hover?
+    const hoverCapable = window.matchMedia?.('(hover: hover)');
+    if (hoverCapable) {
+        return !hoverCapable.matches;
+    }
+
+    // Fallbacks for engines without the query.
     const userAgent = typeof navigator.userAgent === 'string' ? navigator.userAgent : '';
     if (/android|iphone|ipad|ipod|mobile/i.test(userAgent)) {
         return true;
     }
-    if (Number(navigator.maxTouchPoints || 0) > 0) {
-        return true;
-    }
-    return typeof window !== 'undefined' && Number(window.matchMedia?.('(pointer: coarse)')?.matches) > 0;
+    return Number(navigator.maxTouchPoints || 0) > 0;
 }
 
 /**
@@ -611,7 +631,15 @@ function createButton(store, config) {
         }
     };
 
-    button.addEventListener('pointerenter', () => {
+    // Hover is wired to *both* pointer and mouse events, deliberately.
+    //
+    // In the TauriTavern webview `pointerenter`/`pointerleave` never reached this button
+    // while `mousemove` did — a diagnostic listener recorded a stream of `mousemove` and not
+    // a single `pointerenter` — so a menu that depended only on pointer events could not be
+    // hovered open there, even though the same code worked in a browser. Listening to both
+    // costs nothing (the handlers share one timer, so a browser that fires both simply
+    // resets it) and makes hover work wherever either family of events does.
+    const onHoverStart = () => {
         if (prefersTapForMenu(readConfig())) {
             return;
         }
@@ -621,19 +649,25 @@ function createButton(store, config) {
             hoverOpenTimer = null;
             openMenu();
         }, HOVER_OPEN_DELAY_MS);
-    });
+    };
 
-    button.addEventListener('pointerleave', () => {
+    const onHoverEnd = () => {
         cancelHoverOpen();
         if (prefersTapForMenu(readConfig())) {
             return;
         }
         document.getElementById(MENU_ID)?.appendCloseDelay?.();
-    });
+    };
+
+    button.addEventListener('pointerenter', onHoverStart);
+    button.addEventListener('mouseenter', onHoverStart);
+    button.addEventListener('pointerleave', onHoverEnd);
+    button.addEventListener('mouseleave', onHoverEnd);
 
     // A press means this was a tap or click, not a hover: the click handler owns
     // the outcome, so drop the pending hover-open.
     button.addEventListener('pointerdown', cancelHoverOpen);
+    button.addEventListener('mousedown', cancelHoverOpen);
 
     button.addEventListener('focus', openMenu);
     button.addEventListener('blur', cancelHoverOpen);
@@ -988,8 +1022,12 @@ function createMenu(store) {
     }
 
     // Always interactable, but only visible while the menu is open or hovered.
+    // Both families, for the same reason as the button: this webview delivers mouse events
+    // even when pointer events do not arrive.
     menu.addEventListener('pointerenter', cancelClose);
+    menu.addEventListener('mouseenter', cancelClose);
     menu.addEventListener('pointerleave', scheduleClose);
+    menu.addEventListener('mouseleave', scheduleClose);
     return menu;
 }
 
