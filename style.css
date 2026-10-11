@@ -277,9 +277,15 @@ html.tt-quick-quote-no-anim #tt_quick_quote_menu.open {
     border-color: transparent;
 }
 
+/* Hover on the whole symbol block, not just on the two characters of 内／外.
+   The ring below only appears when the pointer is exactly over that small word, which is easy to
+   miss while moving along the row — reported as "鼠标移上去的高亮加回去". The block is the target the
+   user is actually pointing at, so the block is what lights up. `!important` because the `.active`
+   rule further down forces this background transparent, and a symbol that is currently in use must
+   still respond to the pointer. */
 #tt_quick_quote_menu .tt-quick-quote-option:hover {
     opacity: 1;
-    background-color: var(--white30a, rgba(255, 255, 255, 0.18));
+    background-color: var(--white30a, rgba(255, 255, 255, 0.18)) !important;
 }
 
 /* The symbol the button currently inserts. No paint at all.
